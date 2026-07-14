@@ -1,0 +1,28 @@
+{
+  "name": "linkedin-email-drafter",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "better-sqlite3": "^11.10.0",
+    "csv-parse": "^6.1.0",
+    "mammoth": "^1.9.1",
+    "next": "^15.3.2",
+    "openai": "^4.104.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
