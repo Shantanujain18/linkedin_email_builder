@@ -9,11 +9,18 @@ export const ROLE_KEYWORDS = [
   "QA Engineer", "Team Lead"
 ];
 
+let openai: OpenAI | null = null;
+
 function client() {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is not configured. Add it to email_sender/.env.local.");
   }
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  if (!openai) openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return openai;
+}
+
+function model() {
+  return process.env.OPENAI_MODEL || "gpt-4o-mini";
 }
 
 function jsonFromResponse(content: string | null | undefined) {
@@ -41,9 +48,20 @@ function toCandidateProfile(raw: Record<string, unknown>): CandidateProfile {
   };
 }
 
+function compactProfile(profile: CandidateProfile) {
+  return {
+    name: profile.name,
+    yoe: profile.yoe,
+    top_skills: profile.top_skills,
+    current_role: profile.current_role,
+    phone: profile.phone,
+    email: profile.email
+  };
+}
+
 export async function extractCandidateProfile(resumeText: string): Promise<CandidateProfile> {
   const response = await client().chat.completions.create({
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    model: model(),
     temperature: 0.1,
     response_format: { type: "json_object" },
     messages: [
@@ -59,19 +77,84 @@ export async function extractCandidateProfile(resumeText: string): Promise<Candi
 
 export async function draftEmail(profile: CandidateProfile, post: { postedBy: string; content: string; email: string }) {
   const response = await client().chat.completions.create({
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-    temperature: 0.5,
+    model: model(),
+    temperature: 0.4,
+    max_tokens: 450,
     response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
-        content: `Write a concise, professional job-application outreach email. Return only JSON with string keys subject and body. Never claim the candidate has experience not present in the profile. Mention the relevant role only if supported by the post. Do not include markdown fences. Possible role keywords: ${ROLE_KEYWORDS.join(", ")}.`
+        content: `Write a concise professional job-application outreach email (under 140 words). Return only JSON with string keys subject and body. Never invent experience. Mention a role only if the post supports it. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`
       },
       {
         role: "user",
-        content: JSON.stringify({ candidate: profile, recipient: post.postedBy, job_post: post.content, recipient_email: post.email })
+        content: JSON.stringify({
+          candidate: compactProfile(profile),
+          recipient: post.postedBy,
+          job_post: post.content.slice(0, 1800),
+          recipient_email: post.email
+        })
       }
     ]
   });
-  return jsonFromResponse(response.choices[0]?.message.content) as { subject: string; body: string };
+  const parsed = jsonFromResponse(response.choices[0]?.message.content) as { subject?: unknown; body?: unknown };
+  return { subject: asString(parsed.subject), body: asString(parsed.body) };
+}
+
+/** Generate several personalized drafts in one model call. */
+export async function draftEmailBatch(
+  profile: CandidateProfile,
+  posts: Array<{ key: string; postedBy: string; content: string; email: string }>
+): Promise<Record<string, { subject: string; body: string }>> {
+  if (!posts.length) return {};
+  if (posts.length === 1) {
+    const one = await draftEmail(profile, posts[0]);
+    return { [posts[0].key]: one };
+  }
+
+  const response = await client().chat.completions.create({
+    model: model(),
+    temperature: 0.4,
+    max_tokens: Math.min(350 * posts.length, 2500),
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: `Write concise professional job-application outreach emails (under 140 words each). Return only JSON: {"drafts":[{"key":"...","subject":"...","body":"..."}]}. Include exactly one object per input key. Never invent experience. Mention a role only if that post supports it. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          candidate: compactProfile(profile),
+          posts: posts.map((post) => ({
+            key: post.key,
+            recipient: post.postedBy,
+            job_post: post.content.slice(0, 1200),
+            recipient_email: post.email
+          }))
+        })
+      }
+    ]
+  });
+
+  const parsed = jsonFromResponse(response.choices[0]?.message.content) as { drafts?: unknown };
+  const drafts = Array.isArray(parsed.drafts) ? parsed.drafts : [];
+  const byKey: Record<string, { subject: string; body: string }> = {};
+
+  for (const item of drafts) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const key = asString(row.key);
+    if (!key) continue;
+    byKey[key] = { subject: asString(row.subject), body: asString(row.body) };
+  }
+
+  // Fill any missing keys with individual calls so generation still completes.
+  const missing = posts.filter((post) => !byKey[post.key]?.subject || !byKey[post.key]?.body);
+  if (missing.length) {
+    const fallbacks = await Promise.all(missing.map(async (post) => [post.key, await draftEmail(profile, post)] as const));
+    for (const [key, value] of fallbacks) byKey[key] = value;
+  }
+
+  return byKey;
 }

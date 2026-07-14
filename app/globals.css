@@ -15,9 +15,20 @@ textarea { min-height: 100px; resize: vertical; }
 input[type=file] { padding: 9px; }
 button { border: 0; border-radius: 9px; padding: 11px 15px; margin-top: 16px; background: #2f81f7; color: white; font-weight: 750; cursor: pointer; }
 button.secondary { margin-left: 8px; background: #303946; }
+button.danger { background: #6e2f36; }
+button.compact { margin-top: 0; padding: 7px 10px; font-size: 12px; }
 button:disabled { cursor: wait; opacity: .6; }
 .status { min-height: 22px; margin: 12px 0 0; color: #7ee787; }
 .error { color: #ff7b72; }
+.hint { margin: 10px 0 0; font-size: 13px; }
+.smtp-form .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.checkbox { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-weight: 600; color: #b8c2cf; }
+.checkbox input { width: auto; }
+code { font-size: 12px; color: #9da7b3; }
+.badge { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; background: #303946; color: #c9d1d9; }
+.badge.sent { background: #1b4332; color: #7ee787; }
+.badge.failed { background: #4a1d24; color: #ff7b72; }
+.badge.draft { background: #303946; color: #c9d1d9; }
 .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
 .stat { border: 1px solid #293241; border-radius: 10px; padding: 10px 13px; color: #9da7b3; }
 .stat strong { display: block; color: #e6edf3; font-size: 20px; }
@@ -25,5 +36,19 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid #293241; padding: 10px 7px; text-align: left; vertical-align: top; }
 th { color: #b8c2cf; }
 td.body-cell { max-width: 420px; white-space: pre-wrap; }
+td.actions-cell { white-space: nowrap; }
+td.actions-cell .compact + .compact { margin-left: 6px; }
+.editing-row td { background: #111821; }
+.draft-edit { padding: 6px 0 10px; }
+.draft-edit .fields { display: grid; grid-template-columns: 1fr 1.4fr; gap: 0 14px; }
+.draft-edit textarea { min-height: 160px; white-space: pre-wrap; }
+.draft-edit .row-actions { display: flex; flex-wrap: wrap; gap: 0; }
 a { color: #58a6ff; }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+@media (max-width: 760px) {
+  .grid { grid-template-columns: 1fr; }
+  .wide { grid-column: auto; }
+  .smtp-form .fields,
+  .draft-edit .fields { grid-template-columns: 1fr; }
+  button.secondary { margin-left: 0; }
+  td.actions-cell .compact + .compact { margin-left: 0; margin-top: 6px; display: inline-block; }
+}

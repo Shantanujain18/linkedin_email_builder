@@ -17,12 +17,14 @@
     "csv-parse": "^6.1.0",
     "mammoth": "^1.9.1",
     "next": "^15.3.2",
+    "nodemailer": "^9.0.3",
     "openai": "^4.104.0",
     "pdf-parse": "^1.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@types/nodemailer": "^8.0.1",
     "typescript": "^5.8.3"
   }
 }
