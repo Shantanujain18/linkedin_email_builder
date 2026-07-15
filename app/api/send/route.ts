@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs";
-import { db, getProfile, getSmtpSettings, now } from "@/lib/db";
+import {
+  db,
+  emailedTodaySet,
+  getProfile,
+  getSmtpSettings,
+  normalizeEmail,
+  now,
+  recordEmailSent,
+  todayKey,
+  wasEmailedToday
+} from "@/lib/db";
 import { sendMail } from "@/lib/mail";
 
 export const runtime = "nodejs";
@@ -22,9 +32,12 @@ export async function POST(request: Request) {
     }
 
     const draftId = body.draftId != null ? Number(body.draftId) : null;
+    const draftIds = Array.isArray(body.draftIds)
+      ? body.draftIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
+      : [];
     const sendAll = Boolean(body.all);
-    if (!sendAll && (!draftId || !Number.isFinite(draftId))) {
-      return NextResponse.json({ error: "Provide draftId or set all=true." }, { status: 400 });
+    if (!sendAll && !draftIds.length && (!draftId || !Number.isFinite(draftId))) {
+      return NextResponse.json({ error: "Provide draftId, draftIds, or set all=true." }, { status: 400 });
     }
 
     const attachResume =
@@ -35,6 +48,11 @@ export async function POST(request: Request) {
       drafts = db
         .prepare("SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE status != 'sent' ORDER BY id ASC")
         .all() as DraftRow[];
+    } else if (draftIds.length) {
+      const placeholders = draftIds.map(() => "?").join(",");
+      drafts = db
+        .prepare(`SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE id IN (${placeholders}) AND status != 'sent' ORDER BY id ASC`)
+        .all(...draftIds) as DraftRow[];
     } else {
       const draft = db
         .prepare("SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE id = ?")
@@ -62,10 +80,37 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
+    const day = todayKey();
+    const alreadyToday = emailedTodaySet(day);
+    const sentThisRun = new Set<string>();
+
     let sent = 0;
+    let skipped = 0;
     const errors: Array<{ id: number; error: string }> = [];
+    const skippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
 
     for (const draft of drafts) {
+      const email = normalizeEmail(draft.recipient_email);
+      if (!email) {
+        skipped += 1;
+        skippedDrafts.push({ id: draft.id, email: draft.recipient_email, reason: "Missing recipient email." });
+        continue;
+      }
+
+      if (alreadyToday.has(email) || sentThisRun.has(email) || wasEmailedToday(email, day)) {
+        skipped += 1;
+        skippedDrafts.push({
+          id: draft.id,
+          email,
+          reason: "Already emailed this address today."
+        });
+        db.prepare("UPDATE email_drafts SET status = 'skipped', updated_at = ? WHERE id = ? AND status != 'sent'").run(
+          now(),
+          draft.id
+        );
+        continue;
+      }
+
       try {
         await sendMail({
           smtp,
@@ -74,7 +119,11 @@ export async function POST(request: Request) {
           body: draft.body,
           attachment
         });
-        db.prepare("UPDATE email_drafts SET status = 'sent', updated_at = ? WHERE id = ?").run(now(), draft.id);
+        const timestamp = now();
+        db.prepare("UPDATE email_drafts SET status = 'sent', updated_at = ? WHERE id = ?").run(timestamp, draft.id);
+        recordEmailSent(email, draft.id, day);
+        alreadyToday.add(email);
+        sentThisRun.add(email);
         sent += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Send failed.";
@@ -85,9 +134,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       sent,
+      skipped,
       failed: errors.length,
       errors,
-      attached_resume: Boolean(attachment)
+      skipped_drafts: skippedDrafts,
+      attached_resume: Boolean(attachment),
+      day
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to send email." }, { status: 500 });

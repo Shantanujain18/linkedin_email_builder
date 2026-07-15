@@ -77,7 +77,8 @@ export async function POST() {
       current_role: String(profileRow.current_role || ""),
       resume_link: String(profileRow.resume_link || ""),
       phone: String(profileRow.phone || ""),
-      email: String(profileRow.email || "")
+      email: String(profileRow.email || ""),
+      immediate_joiner: Number(profileRow.immediate_joiner) === 1
     };
 
     const posts = db

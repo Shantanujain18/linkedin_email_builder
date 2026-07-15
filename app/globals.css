@@ -23,12 +23,15 @@ button:disabled { cursor: wait; opacity: .6; }
 .hint { margin: 10px 0 0; font-size: 13px; }
 .smtp-form .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
 .checkbox { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-weight: 600; color: #b8c2cf; }
+.checkbox.tight { margin-top: 0; margin-right: 18px; }
 .checkbox input { width: auto; }
+.bulk-bar { display: flex; flex-wrap: wrap; gap: 10px 0; margin: 8px 0 4px; }
 code { font-size: 12px; color: #9da7b3; }
 .badge { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; background: #303946; color: #c9d1d9; }
 .badge.sent { background: #1b4332; color: #7ee787; }
 .badge.failed { background: #4a1d24; color: #ff7b72; }
 .badge.draft { background: #303946; color: #c9d1d9; }
+.badge.skipped { background: #3d3420; color: #e3b341; }
 .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
 .stat { border: 1px solid #293241; border-radius: 10px; padding: 10px 13px; color: #9da7b3; }
 .stat strong { display: block; color: #e6edf3; font-size: 20px; }

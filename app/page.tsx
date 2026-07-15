@@ -46,6 +46,7 @@ export default function Home() {
   const [stats, setStats] = useState<Stats>({ profile: null, posts: [], drafts: [], smtp: defaultSmtp });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [immediateJoiner, setImmediateJoiner] = useState(false);
   const [smtpForm, setSmtpForm] = useState({
     host: defaultSmtp.host,
     port: String(defaultSmtp.port),
@@ -55,6 +56,8 @@ export default function Home() {
     from_name: "",
     attach_resume: true
   });
+  const [bulkAttachResume, setBulkAttachResume] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ recipient_email: "", subject: "", body: "" });
 
@@ -63,6 +66,8 @@ export default function Home() {
     const data = await response.json();
     const smtp = data.smtp || defaultSmtp;
     setStats({ profile: data.profile || null, posts: data.posts || [], drafts: data.drafts || [], smtp });
+    setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
+    setBulkAttachResume(smtp.attach_resume !== false);
     setSmtpForm((prev) => ({
       host: smtp.host || "smtp.gmail.com",
       port: String(smtp.port || 587),
@@ -72,6 +77,14 @@ export default function Home() {
       from_name: smtp.from_name || "",
       attach_resume: smtp.attach_resume !== false
     }));
+    setSelectedIds((prev) => {
+      const eligible = new Set(
+        (data.drafts || [])
+          .filter((draft: Draft) => draft.status !== "sent" && draft.status !== "skipped")
+          .map((draft: Draft) => draft.id)
+      );
+      return prev.filter((id) => eligible.has(id));
+    });
   }
   useEffect(() => { refresh().catch(() => {}); }, []);
 
@@ -81,6 +94,26 @@ export default function Home() {
     const response = await fetch("/api/resume", { method: "POST", body: form });
     const data = await response.json(); setBusy(false); setStatus(data.error || "Candidate profile saved.");
     if (response.ok) refresh();
+  }
+
+  async function toggleImmediateJoiner(checked: boolean) {
+    setImmediateJoiner(checked);
+    if (!stats.profile) return;
+    setBusy(true); setStatus("Saving joining availability…");
+    const response = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ immediate_joiner: checked })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(
+      data.error ||
+        (checked
+          ? "Marked as immediate joiner. Regenerate drafts to include it in emails."
+          : "Immediate joiner turned off. Regenerate drafts if needed.")
+    );
+    if (response.ok) refresh();
+    else setImmediateJoiner(!checked);
   }
 
   async function importCsv(event: React.FormEvent<HTMLFormElement>) {
@@ -103,7 +136,10 @@ export default function Home() {
     const response = await fetch("/api/drafts", { method: "DELETE" });
     const data = await response.json(); setBusy(false);
     setStatus(data.error || `Cleared ${data.deleted || 0} drafts.`);
-    if (response.ok) refresh();
+    if (response.ok) {
+      setSelectedIds([]);
+      refresh();
+    }
   }
 
   async function saveSmtp(event: React.FormEvent<HTMLFormElement>) {
@@ -126,6 +162,7 @@ export default function Home() {
     setStatus(data.error || "SMTP settings saved.");
     if (response.ok) {
       setSmtpForm((prev) => ({ ...prev, pass: "" }));
+      setBulkAttachResume(smtpForm.attach_resume);
       refresh();
     }
   }
@@ -163,16 +200,36 @@ export default function Home() {
     refresh();
   }
 
-  async function sendDrafts(options: { draftId?: number; all?: boolean }) {
-    const label = options.all ? "all unsent drafts" : "this draft";
-    if (!window.confirm(`Send ${label} via SMTP${smtpForm.attach_resume ? " with resume attached" : ""}?`)) return;
-    setBusy(true); setStatus("Sending email…");
+  function toggleSelected(id: number, checked: boolean) {
+    setSelectedIds((prev) => checked ? Array.from(new Set([...prev, id])) : prev.filter((value) => value !== id));
+  }
+
+  function selectAllUnsent(checked: boolean) {
+    if (!checked) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds(stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped").map((draft) => draft.id));
+  }
+
+  async function sendDrafts(options: { draftId?: number; draftIds?: number[]; all?: boolean }) {
+    const count = options.all
+      ? unsentCount
+      : options.draftIds?.length || (options.draftId ? 1 : 0);
+    const label = options.all
+      ? `all ${count} unsent drafts`
+      : options.draftIds?.length
+        ? `${options.draftIds.length} selected draft(s)`
+        : "this draft";
+    const withResume = bulkAttachResume ? " with resume attached" : " without resume";
+    if (!window.confirm(`Send ${label} via SMTP${withResume}?`)) return;
+    setBusy(true); setStatus(`Bulk sending ${count} email(s)…`);
     const response = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...options,
-        attach_resume: smtpForm.attach_resume
+        attach_resume: bulkAttachResume
       })
     });
     const data = await response.json(); setBusy(false);
@@ -181,17 +238,22 @@ export default function Home() {
       return;
     }
     const parts = [`Sent ${data.sent || 0}`];
+    if (data.skipped) parts.push(`${data.skipped} skipped (already emailed today)`);
     if (data.failed) parts.push(`${data.failed} failed`);
     if (data.attached_resume) parts.push("resume attached");
     setStatus(parts.join(" · ") + ".");
+    setSelectedIds([]);
     refresh();
   }
 
-  const unsentCount = stats.drafts.filter((draft) => draft.status !== "sent").length;
+  const unsentCount = stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped").length;
+  const selectedUnsent = selectedIds.length;
+  const allUnsentSelected = unsentCount > 0 && selectedUnsent === unsentCount;
+  const hasResumeFile = Boolean(stats.profile?.has_resume_file);
 
   return <main>
     <h1>LinkedIn Email Drafter</h1>
-    <p className="subtitle">Upload a resume, import the LinkedIn post CSV, generate outreach drafts, then send them directly with Gmail App Password SMTP and an optional resume attachment.</p>
+    <p className="subtitle">Upload a resume, import the LinkedIn post CSV, generate outreach drafts, then bulk-send them with Gmail App Password SMTP and an optional resume attachment.</p>
     <div className="grid">
       <section className="card">
         <h2>1. Candidate resume</h2>
@@ -200,10 +262,20 @@ export default function Home() {
           <input id="resume" name="resume" type="file" accept=".pdf,.docx,.txt" required />
           <button disabled={busy}>Extract profile</button>
         </form>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={immediateJoiner}
+            disabled={busy || !stats.profile}
+            onChange={(e) => toggleImmediateJoiner(e.target.checked)}
+          />
+          Immediate joiner (mention availability in generated emails)
+        </label>
         {stats.profile && <p>
           {String(stats.profile.name || "Candidate")} · {String(stats.profile.current_role || "Role not detected")}<br />
           {String(stats.profile.top_skills || "Skills not detected")}<br />
-          {stats.profile.has_resume_file
+          {immediateJoiner ? "Immediate joiner: yes" : "Immediate joiner: no"}<br />
+          {hasResumeFile
             ? `Resume file ready to attach: ${String(stats.profile.resume_filename || "stored file")}`
             : "Re-upload resume to enable email attachments."}
         </p>}
@@ -219,7 +291,7 @@ export default function Home() {
       </section>
       <section className="card wide">
         <h2>3. Generate email drafts</h2>
-        <p>Only posts containing an email address are drafted. Review subjects and bodies, then send or clear.</p>
+        <p>Only posts containing an email address are drafted. If immediate joiner is checked, new drafts will mention you can join immediately. Clear and regenerate to refresh existing drafts.</p>
         <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length}>Generate drafts</button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy || !stats.drafts.length} type="button">Clear all drafts</button>
         <a href="/api/export" download><button className="secondary" type="button">Download final CSV</button></a>
@@ -257,27 +329,54 @@ export default function Home() {
           </div>
           <label className="checkbox">
             <input type="checkbox" checked={smtpForm.attach_resume} onChange={(e) => setSmtpForm({ ...smtpForm, attach_resume: e.target.checked })} />
-            Attach uploaded resume when sending emails
+            Default: attach uploaded resume when sending emails
           </label>
           <button disabled={busy}>Save SMTP settings</button>
           <p className="hint">{stats.smtp.configured ? "SMTP is configured and ready to send." : "SMTP is not fully configured yet."}</p>
         </form>
       </section>
       {stats.drafts.length > 0 && <section className="card wide">
-        <h2>Draft preview ({stats.drafts.length})</h2>
+        <h2>5. Bulk send & draft preview ({stats.drafts.length})</h2>
+        <div className="bulk-bar">
+          <label className="checkbox tight">
+            <input
+              type="checkbox"
+              checked={bulkAttachResume}
+              onChange={(e) => setBulkAttachResume(e.target.checked)}
+            />
+            Attach resume on send {hasResumeFile ? `(${String(stats.profile?.resume_filename || "file ready")})` : "(re-upload resume first)"}
+          </label>
+          <label className="checkbox tight">
+            <input
+              type="checkbox"
+              checked={allUnsentSelected}
+              disabled={!unsentCount}
+              onChange={(e) => selectAllUnsent(e.target.checked)}
+            />
+            Select all unsent ({unsentCount})
+          </label>
+        </div>
         <button
           onClick={() => sendDrafts({ all: true })}
-          disabled={busy || !stats.smtp.configured || !unsentCount}
+          disabled={busy || !stats.smtp.configured || !unsentCount || (bulkAttachResume && !hasResumeFile)}
           type="button"
         >
-          Send all unsent ({unsentCount})
+          Bulk send all unsent ({unsentCount})
+        </button>
+        <button
+          className="secondary"
+          onClick={() => sendDrafts({ draftIds: selectedIds })}
+          disabled={busy || !stats.smtp.configured || !selectedUnsent || (bulkAttachResume && !hasResumeFile)}
+          type="button"
+        >
+          Send selected ({selectedUnsent})
         </button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy} type="button">Clear all drafts</button>
-        <table><thead><tr><th>To</th><th>Subject</th><th>Body</th><th>Status</th><th></th></tr></thead><tbody>
+        <table><thead><tr><th></th><th>To</th><th>Subject</th><th>Body</th><th>Status</th><th></th></tr></thead><tbody>
           {stats.drafts.map((draft) => (
             editingId === draft.id ? (
               <tr key={draft.id} className="editing-row">
-                <td colSpan={5}>
+                <td colSpan={6}>
                   <form className="draft-edit" onSubmit={saveDraft}>
                     <div className="fields">
                       <div>
@@ -317,10 +416,19 @@ export default function Home() {
               </tr>
             ) : (
               <tr key={draft.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    disabled={draft.status === "sent" || draft.status === "skipped"}
+                    checked={selectedIds.includes(draft.id)}
+                    onChange={(e) => toggleSelected(draft.id, e.target.checked)}
+                    aria-label={`Select draft to ${draft.recipient_email}`}
+                  />
+                </td>
                 <td>{draft.recipient_email}</td>
                 <td>{draft.subject}</td>
                 <td className="body-cell">{draft.body}</td>
-                <td><span className={`badge ${draft.status}`}>{draft.status}</span></td>
+                <td><span className={`badge ${draft.status}`}>{draft.status === "skipped" ? "skipped today" : draft.status}</span></td>
                 <td className="actions-cell">
                   <button className="secondary compact" type="button" disabled={busy || editingId != null} onClick={() => startEdit(draft)}>
                     Edit
@@ -328,7 +436,7 @@ export default function Home() {
                   <button
                     className="secondary compact"
                     type="button"
-                    disabled={busy || editingId != null || !stats.smtp.configured || draft.status === "sent"}
+                    disabled={busy || editingId != null || !stats.smtp.configured || draft.status === "sent" || draft.status === "skipped" || (bulkAttachResume && !hasResumeFile)}
                     onClick={() => sendDrafts({ draftId: draft.id })}
                   >
                     Send

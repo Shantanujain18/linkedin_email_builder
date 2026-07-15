@@ -59,6 +59,14 @@ db.exec(`
     attach_resume INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS email_send_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient_email TEXT NOT NULL,
+    sent_on TEXT NOT NULL,
+    draft_id INTEGER,
+    sent_at TEXT NOT NULL,
+    UNIQUE(recipient_email, sent_on)
+  );
 `);
 
 function ensureColumn(table: string, column: string, definition: string) {
@@ -71,6 +79,7 @@ function ensureColumn(table: string, column: string, definition: string) {
 ensureColumn("candidate_profile", "resume_filename", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("candidate_profile", "resume_mime", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("candidate_profile", "resume_path", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("candidate_profile", "immediate_joiner", "INTEGER NOT NULL DEFAULT 0");
 
 export type SmtpSettings = {
   host: string;
@@ -87,6 +96,43 @@ export function now() {
   return new Date().toISOString();
 }
 
+/** Calendar day key in the server's local timezone (YYYY-MM-DD). */
+export function todayKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function normalizeEmail(email: string) {
+  return String(email || "").trim().toLowerCase();
+}
+
+export function wasEmailedToday(email: string, day = todayKey()) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  const row = db
+    .prepare("SELECT id FROM email_send_log WHERE recipient_email = ? AND sent_on = ?")
+    .get(normalized, day);
+  return Boolean(row);
+}
+
+export function recordEmailSent(email: string, draftId: number | null, day = todayKey()) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return;
+  db.prepare(`INSERT INTO email_send_log (recipient_email, sent_on, draft_id, sent_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(recipient_email, sent_on) DO UPDATE SET draft_id = excluded.draft_id, sent_at = excluded.sent_at
+  `).run(normalized, day, draftId, now());
+}
+
+export function emailedTodaySet(day = todayKey()) {
+  const rows = db.prepare("SELECT recipient_email FROM email_send_log WHERE sent_on = ?").all(day) as Array<{
+    recipient_email: string;
+  }>;
+  return new Set(rows.map((row) => normalizeEmail(row.recipient_email)));
+}
+
 export function getProfile() {
   return db.prepare("SELECT * FROM candidate_profile WHERE id = 1").get() as Record<string, string> | undefined;
 }
@@ -97,8 +143,19 @@ export function getPublicProfile() {
   const { resume_text: _resumeText, resume_path: _resumePath, ...rest } = row;
   return {
     ...rest,
+    immediate_joiner: Number(row.immediate_joiner) === 1,
     has_resume_file: Boolean(row.resume_path && fs.existsSync(String(row.resume_path)))
   };
+}
+
+export function setImmediateJoiner(value: boolean) {
+  const existing = getProfile();
+  if (!existing) return null;
+  db.prepare("UPDATE candidate_profile SET immediate_joiner = ?, updated_at = ? WHERE id = 1").run(
+    value ? 1 : 0,
+    now()
+  );
+  return getPublicProfile();
 }
 
 export function getPosts() {

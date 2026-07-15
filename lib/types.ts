@@ -6,6 +6,7 @@ export type CandidateProfile = {
   resume_link: string;
   phone: string;
   email: string;
+  immediate_joiner?: boolean;
 };
 
 export type LinkedInPost = {

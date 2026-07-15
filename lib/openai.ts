@@ -55,8 +55,16 @@ function compactProfile(profile: CandidateProfile) {
     top_skills: profile.top_skills,
     current_role: profile.current_role,
     phone: profile.phone,
-    email: profile.email
+    email: profile.email,
+    immediate_joiner: Boolean(profile.immediate_joiner)
   };
+}
+
+function draftSystemPrompt(batch: boolean) {
+  const base = batch
+    ? `Write concise professional job-application outreach emails (under 140 words each). Return only JSON: {"drafts":[{"key":"...","subject":"...","body":"..."}]}. Include exactly one object per input key.`
+    : `Write a concise professional job-application outreach email (under 140 words). Return only JSON with string keys subject and body.`;
+  return `${base} Never invent experience. Mention a role only if the post supports it. If candidate.immediate_joiner is true, clearly mention availability to join immediately / can join immediately when it fits naturally. If false, do not claim immediate joining. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`;
 }
 
 export async function extractCandidateProfile(resumeText: string): Promise<CandidateProfile> {
@@ -82,10 +90,7 @@ export async function draftEmail(profile: CandidateProfile, post: { postedBy: st
     max_tokens: 450,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content: `Write a concise professional job-application outreach email (under 140 words). Return only JSON with string keys subject and body. Never invent experience. Mention a role only if the post supports it. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`
-      },
+      { role: "system", content: draftSystemPrompt(false) },
       {
         role: "user",
         content: JSON.stringify({
@@ -118,10 +123,7 @@ export async function draftEmailBatch(
     max_tokens: Math.min(350 * posts.length, 2500),
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content: `Write concise professional job-application outreach emails (under 140 words each). Return only JSON: {"drafts":[{"key":"...","subject":"...","body":"..."}]}. Include exactly one object per input key. Never invent experience. Mention a role only if that post supports it. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`
-      },
+      { role: "system", content: draftSystemPrompt(true) },
       {
         role: "user",
         content: JSON.stringify({
