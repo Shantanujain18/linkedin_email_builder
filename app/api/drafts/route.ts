@@ -49,6 +49,17 @@ export async function PATCH(request: Request) {
       | undefined;
     if (!existing) return NextResponse.json({ error: "Draft not found." }, { status: 404 });
 
+    if (typeof body.called === "boolean" && body.recipient_email == null && body.subject == null && body.body == null) {
+      const timestamp = now();
+      db.prepare(`UPDATE email_drafts
+        SET called = ?, called_at = ?, updated_at = ?
+        WHERE id = ?`).run(body.called ? 1 : 0, body.called ? timestamp : "", timestamp, id);
+      const draft = db.prepare(`SELECT id, recipient_email, recipient_name, subject, body, status,
+        phone, location, company, contact_name, hiring_summary, talking_points, job_post, matched_skills, called, called_at
+        FROM email_drafts WHERE id = ?`).get(id) as Record<string, unknown>;
+      return NextResponse.json({ draft: { ...draft, called: Number(draft.called) === 1 } });
+    }
+
     const recipientEmail = String(body.recipient_email ?? "").trim();
     const subject = String(body.subject ?? "").trim();
     const draftBody = String(body.body ?? "");
@@ -60,10 +71,10 @@ export async function PATCH(request: Request) {
       SET recipient_email = ?, subject = ?, body = ?, status = ?, updated_at = ?
       WHERE id = ?`).run(recipientEmail, subject, draftBody, nextStatus, now(), id);
 
-    const draft = db
-      .prepare("SELECT id, recipient_email, recipient_name, subject, body, status FROM email_drafts WHERE id = ?")
-      .get(id);
-    return NextResponse.json({ draft });
+    const draft = db.prepare(`SELECT id, recipient_email, recipient_name, subject, body, status,
+      phone, location, company, contact_name, hiring_summary, talking_points, job_post, matched_skills, called, called_at
+      FROM email_drafts WHERE id = ?`).get(id) as Record<string, unknown>;
+    return NextResponse.json({ draft: { ...draft, called: Number(draft.called) === 1 } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to update draft." }, { status: 500 });
   }
@@ -120,8 +131,9 @@ export async function POST() {
 
     const batches = chunk(pending, BATCH_SIZE);
     const insert = db.prepare(`INSERT INTO email_drafts
-      (post_id, recipient_email, recipient_name, subject, body, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      (post_id, recipient_email, recipient_name, subject, body, phone, location, company, contact_name,
+       hiring_summary, talking_points, job_post, matched_skills, called, called_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)`);
 
     let created = 0;
     let skipped = 0;
@@ -142,7 +154,23 @@ export async function POST() {
             skipped += 1;
             continue;
           }
-          insert.run(item.postId, item.email, item.postedBy, draft.subject, draft.body, timestamp, timestamp);
+          insert.run(
+            item.postId,
+            item.email,
+            draft.contact_name || item.postedBy,
+            draft.subject,
+            draft.body,
+            draft.phone,
+            draft.location,
+            draft.company,
+            draft.contact_name || item.postedBy,
+            draft.hiring_summary,
+            draft.talking_points,
+            item.content,
+            draft.matched_skills.join(", "),
+            timestamp,
+            timestamp
+          );
           created += 1;
         }
       });

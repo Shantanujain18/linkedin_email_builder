@@ -11,7 +11,18 @@ export const ROLE_KEYWORDS = [
 ];
 
 export type DraftResult =
-  | { skip: false; subject: string; body: string; matched_skills: string[] }
+  | {
+      skip: false;
+      subject: string;
+      body: string;
+      matched_skills: string[];
+      phone: string;
+      location: string;
+      company: string;
+      contact_name: string;
+      hiring_summary: string;
+      talking_points: string;
+    }
   | { skip: true; reason: string };
 
 let openai: OpenAI | null = null;
@@ -69,11 +80,11 @@ function compactProfile(profile: CandidateProfile) {
 
 function draftSystemPrompt(batch: boolean) {
   const shape = batch
-    ? `Return only JSON: {"drafts":[{"key":"...","skip":false,"matched_skills":["..."],"subject":"...","body":"..."}|{"key":"...","skip":true,"reason":"..."}]}. Include exactly one object per input key.`
-    : `Return only JSON with either {"skip":false,"matched_skills":["..."],"subject":"...","body":"..."} or {"skip":true,"reason":"..."}.`;
+    ? `Return only JSON: {"drafts":[...one object per input key...]}. Each object is either {"key":"...","skip":true,"reason":"..."} OR {"key":"...","skip":false,"matched_skills":["..."],"phone":"...","location":"...","company":"...","contact_name":"...","hiring_summary":"...","talking_points":["...","..."],"subject":"...","body":"..."}.`
+    : `Return only JSON that is either {"skip":true,"reason":"..."} OR {"skip":false,"matched_skills":["..."],"phone":"...","location":"...","company":"...","contact_name":"...","hiring_summary":"...","talking_points":["...","..."],"subject":"...","body":"..."}.`;
 
   return [
-    "You write concise professional job-application outreach emails (under 140 words) only when the candidate is a genuine skill fit.",
+    "You write concise professional job-application outreach emails (under 140 words) only when the candidate is a genuine skill fit, and you also extract recruiter/job details from the post.",
     shape,
     "Skill-fit rules (strict):",
     "1. Read the full job post. Identify the required/primary technologies and role.",
@@ -84,8 +95,26 @@ function draftSystemPrompt(batch: boolean) {
     "6. When fit is true, emphasize ONLY matched skills and relevant experience. Do not list unrelated skills as if they qualify for the role.",
     "7. Never invent experience. Mention a target role title only if the post supports it.",
     "8. If candidate.immediate_joiner is true, mention immediate joining availability naturally. If false, do not claim it.",
+    "Extraction rules for fit=true drafts:",
+    "9. phone: extract recruiter/mobile numbers from the post (include country code if present). Use empty string if none. Never invent a number.",
+    "10. location: city/remote/hybrid if stated, else empty string.",
+    "11. company: hiring company or agency name if present, else empty string.",
+    "12. contact_name: HR/recruiter/poster name if present (may use recipient), else empty string.",
+    "13. hiring_summary: 1-2 sentence summary of what they are hiring for.",
+    "14. talking_points: 3-5 short call talking points tailored to matched skills and the role (array of strings).",
     `Possible role keywords when relevant: ${ROLE_KEYWORDS.join(", ")}.`
   ].join(" ");
+}
+
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(asString).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(/\n|•|- /)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function toDraftResult(raw: Record<string, unknown>): DraftResult {
@@ -100,7 +129,19 @@ function toDraftResult(raw: Record<string, unknown>): DraftResult {
   const matched = Array.isArray(raw.matched_skills)
     ? raw.matched_skills.map(asString).filter(Boolean)
     : [];
-  return { skip: false, subject, body, matched_skills: matched };
+  const talkingPoints = asStringList(raw.talking_points);
+  return {
+    skip: false,
+    subject,
+    body,
+    matched_skills: matched,
+    phone: asString(raw.phone),
+    location: asString(raw.location),
+    company: asString(raw.company),
+    contact_name: asString(raw.contact_name),
+    hiring_summary: asString(raw.hiring_summary),
+    talking_points: talkingPoints.join("\n")
+  };
 }
 
 export async function extractCandidateProfile(resumeText: string): Promise<CandidateProfile> {
@@ -129,7 +170,7 @@ export async function draftEmail(
   const response = await client().chat.completions.create({
     model: model(),
     temperature: 0.3,
-    max_tokens: 500,
+    max_tokens: 900,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: draftSystemPrompt(false) },
@@ -142,7 +183,7 @@ export async function draftEmail(
             post_technologies: fit.postTechs
           },
           recipient: post.postedBy,
-          job_post: post.content.slice(0, 2500),
+          job_post: post.content.slice(0, 4000),
           recipient_email: post.email
         })
       }
@@ -180,7 +221,7 @@ export async function draftEmailBatch(
   const response = await client().chat.completions.create({
     model: model(),
     temperature: 0.3,
-    max_tokens: Math.min(400 * eligible.length, 2800),
+    max_tokens: Math.min(700 * eligible.length, 4000),
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: draftSystemPrompt(true) },
@@ -193,7 +234,7 @@ export async function draftEmailBatch(
             return {
               key: post.key,
               recipient: post.postedBy,
-              job_post: post.content.slice(0, 1800),
+              job_post: post.content.slice(0, 2800),
               recipient_email: post.email,
               skill_fit_hint: {
                 matched_skills: fit.matchedSkills,
@@ -225,3 +266,147 @@ export async function draftEmailBatch(
 
   return results;
 }
+
+export type EnrichmentResult = {
+  phone: string;
+  location: string;
+  company: string;
+  contact_name: string;
+  hiring_summary: string;
+  talking_points: string;
+  matched_skills: string[];
+};
+
+function toEnrichmentResult(raw: Record<string, unknown>): EnrichmentResult {
+  return {
+    phone: asString(raw.phone),
+    location: asString(raw.location),
+    company: asString(raw.company),
+    contact_name: asString(raw.contact_name),
+    hiring_summary: asString(raw.hiring_summary),
+    talking_points: asStringList(raw.talking_points).join("\n"),
+    matched_skills: Array.isArray(raw.matched_skills)
+      ? raw.matched_skills.map(asString).filter(Boolean)
+      : asStringList(raw.matched_skills)
+  };
+}
+
+const ENRICH_SYSTEM = [
+  "Extract recruiter and hiring details from a LinkedIn job post for an existing outreach draft.",
+  "Return only JSON with keys: phone, location, company, contact_name, hiring_summary, talking_points (array of 3-5 short strings), matched_skills (array).",
+  "Use empty strings/arrays when unknown. Never invent phone numbers, company names, or contact names.",
+  "phone: recruiter/mobile numbers with country code if present.",
+  "location: city/remote/hybrid if stated.",
+  "company: hiring company or agency if present.",
+  "contact_name: HR/recruiter/poster name if present.",
+  "hiring_summary: 1-2 sentence summary of what they are hiring for.",
+  "talking_points: tailored to candidate.skills and the role.",
+  "matched_skills: subset of candidate.skills that actually appear relevant to this post."
+].join(" ");
+
+/** Backfill recruiter/job metadata for an existing draft without rewriting the email. */
+export async function enrichDraftFromPost(
+  profile: CandidateProfile,
+  post: { postedBy: string; content: string; email?: string }
+): Promise<EnrichmentResult> {
+  const fit = evaluateSkillFit(profile.top_skills, post.content);
+  const response = await client().chat.completions.create({
+    model: model(),
+    temperature: 0.2,
+    max_tokens: 700,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: ENRICH_SYSTEM },
+      {
+        role: "user",
+        content: JSON.stringify({
+          candidate: compactProfile(profile),
+          skill_fit_hint: {
+            matched_skills: fit.matchedSkills,
+            post_technologies: fit.postTechs
+          },
+          recipient: post.postedBy,
+          recipient_email: post.email || "",
+          job_post: post.content.slice(0, 4000)
+        })
+      }
+    ]
+  });
+  const parsed = toEnrichmentResult(jsonFromResponse(response.choices[0]?.message.content) as Record<string, unknown>);
+  if (!parsed.matched_skills.length && fit.matchedSkills.length) {
+    parsed.matched_skills = fit.matchedSkills;
+  }
+  if (!parsed.contact_name && post.postedBy) parsed.contact_name = post.postedBy;
+  return parsed;
+}
+
+export async function enrichDraftBatch(
+  profile: CandidateProfile,
+  posts: Array<{ key: string; postedBy: string; content: string; email?: string }>
+): Promise<Record<string, EnrichmentResult>> {
+  if (!posts.length) return {};
+  if (posts.length === 1) {
+    return { [posts[0].key]: await enrichDraftFromPost(profile, posts[0]) };
+  }
+
+  const response = await client().chat.completions.create({
+    model: model(),
+    temperature: 0.2,
+    max_tokens: Math.min(650 * posts.length, 3800),
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: `${ENRICH_SYSTEM} For batches return {"items":[{"key":"...","phone":"...","location":"...","company":"...","contact_name":"...","hiring_summary":"...","talking_points":["..."],"matched_skills":["..."]}]} with one object per input key.`
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          candidate: compactProfile(profile),
+          posts: posts.map((post) => {
+            const fit = evaluateSkillFit(profile.top_skills, post.content);
+            return {
+              key: post.key,
+              recipient: post.postedBy,
+              recipient_email: post.email || "",
+              job_post: post.content.slice(0, 2800),
+              skill_fit_hint: {
+                matched_skills: fit.matchedSkills,
+                post_technologies: fit.postTechs
+              }
+            };
+          })
+        })
+      }
+    ]
+  });
+
+  const parsed = jsonFromResponse(response.choices[0]?.message.content) as { items?: unknown; drafts?: unknown };
+  const items = Array.isArray(parsed.items) ? parsed.items : Array.isArray(parsed.drafts) ? parsed.drafts : [];
+  const byKey: Record<string, EnrichmentResult> = {};
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const key = asString(row.key);
+    if (!key) continue;
+    byKey[key] = toEnrichmentResult(row);
+  }
+
+  const missing = posts.filter((post) => !byKey[post.key]);
+  if (missing.length) {
+    const fallbacks = await Promise.all(missing.map(async (post) => [post.key, await enrichDraftFromPost(profile, post)] as const));
+    for (const [key, value] of fallbacks) byKey[key] = value;
+  }
+
+  for (const post of posts) {
+    const row = byKey[post.key];
+    if (!row) continue;
+    if (!row.contact_name && post.postedBy) row.contact_name = post.postedBy;
+    const fit = evaluateSkillFit(profile.top_skills, post.content);
+    if (!row.matched_skills.length && fit.matchedSkills.length) row.matched_skills = fit.matchedSkills;
+  }
+
+  return byKey;
+}
+

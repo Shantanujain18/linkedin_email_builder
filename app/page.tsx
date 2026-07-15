@@ -9,6 +9,16 @@ type Draft = {
   subject: string;
   body: string;
   status: string;
+  phone?: string;
+  location?: string;
+  company?: string;
+  contact_name?: string;
+  hiring_summary?: string;
+  talking_points?: string;
+  job_post?: string;
+  matched_skills?: string;
+  called?: boolean;
+  called_at?: string;
 };
 
 type Smtp = {
@@ -69,6 +79,7 @@ export default function Home() {
   const [bulkAttachResume, setBulkAttachResume] = useState(true);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ recipient_email: "", subject: "", body: "" });
 
   async function refresh() {
@@ -94,6 +105,15 @@ export default function Home() {
     });
   }
   useEffect(() => { refresh().catch(() => {}); }, []);
+
+  useEffect(() => {
+    if (detailId == null) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeDetails();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [detailId]);
 
   async function uploadResume(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setStatus("Reading resume and extracting profile…");
@@ -177,6 +197,27 @@ export default function Home() {
     refresh();
   }
 
+  async function enrichDrafts(options: { ids?: number[]; all?: boolean } = {}) {
+    const ids = options.ids || [];
+    const label = options.all
+      ? "all drafts missing details"
+      : `${ids.length} selected draft(s)`;
+    if (!options.all && !ids.length) return;
+    setBusy(true); setStatus(`Extracting recruiter/job details for ${label}…`);
+    const response = await fetch("/api/drafts/enrich", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options.all ? { only_missing: true } : { ids, only_missing: false })
+    });
+    const data = await response.json(); setBusy(false);
+    if (!response.ok) {
+      setStatus(data.error || "Enrichment failed.");
+      return;
+    }
+    setStatus(data.message || `Enriched ${data.enriched || 0} of ${data.processed || 0} draft(s). Email text was left unchanged.`);
+    refresh();
+  }
+
   async function clearAllDrafts() {
     if (!window.confirm("Clear all drafts? This cannot be undone.")) return;
     setBusy(true); setStatus("Clearing drafts…");
@@ -246,6 +287,16 @@ export default function Home() {
     setEditForm({ recipient_email: "", subject: "", body: "" });
   }
 
+  function openDetails(draft: Draft) {
+    setDetailId(draft.id);
+    cancelEdit();
+  }
+
+  function closeDetails() {
+    setDetailId(null);
+    cancelEdit();
+  }
+
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (editingId == null) return;
@@ -265,16 +316,39 @@ export default function Home() {
     refresh();
   }
 
+  async function toggleCalled(draft: Draft, called: boolean) {
+    setBusy(true); setStatus(called ? "Marking as called…" : "Clearing called mark…");
+    const response = await fetch("/api/drafts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: draft.id, called })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(data.error || (called ? "Marked as called." : "Call mark cleared."));
+    if (response.ok) refresh();
+  }
+
   function toggleSelected(id: number, checked: boolean) {
     setSelectedIds((prev) => checked ? Array.from(new Set([...prev, id])) : prev.filter((value) => value !== id));
   }
 
+  function selectAllRecords(checked: boolean) {
+    setSelectedIds(checked ? stats.drafts.map((draft) => draft.id) : []);
+  }
+
   function selectAllUnsent(checked: boolean) {
-    if (!checked) {
-      setSelectedIds([]);
-      return;
-    }
-    setSelectedIds(stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped").map((draft) => draft.id));
+    const unsentIds = stats.drafts
+      .filter((draft) => draft.status !== "sent" && draft.status !== "skipped")
+      .map((draft) => draft.id);
+    setSelectedIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, ...unsentIds]));
+      const remove = new Set(unsentIds);
+      return prev.filter((id) => !remove.has(id));
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds([]);
   }
 
   async function sendDrafts(options: { draftId?: number; draftIds?: number[]; all?: boolean }) {
@@ -317,8 +391,17 @@ export default function Home() {
     return draft && draft.status !== "sent" && draft.status !== "skipped";
   });
   const selectedUnsent = selectedUnsentIds.length;
+  const allSelected = stats.drafts.length > 0 && selectedIds.length === stats.drafts.length;
+  const someSelected = selectedIds.length > 0 && !allSelected;
   const allUnsentSelected = unsentCount > 0 && selectedUnsent === unsentCount;
   const hasResumeFile = Boolean(stats.profile?.has_resume_file);
+
+  const detailDraft = detailId == null ? null : stats.drafts.find((draft) => draft.id === detailId) || null;
+
+  useEffect(() => {
+    const node = document.getElementById("select-all-drafts") as HTMLInputElement | null;
+    if (node) node.indeterminate = someSelected;
+  }, [someSelected, allSelected]);
 
   return <main>
     <h1>LinkedIn Email Drafter</h1>
@@ -400,8 +483,16 @@ export default function Home() {
       </section>
       <section className="card wide">
         <h2>3. Generate email drafts</h2>
-        <p>Only posts containing an email address are drafted, and only when your skills meaningfully match the job. Mismatched stacks (for example Angular vs React/Python) are skipped. Clear and regenerate to refresh existing drafts.</p>
+        <p>Only posts containing an email address are drafted, and only when your skills meaningfully match the job. Mismatched stacks (for example Angular vs React/Python) are skipped. Use <strong>Enrich older drafts</strong> to extract phone/company/summary/talking points for drafts that were created or sent before this feature existed — email subject/body stay unchanged.</p>
         <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length}>Generate drafts</button>
+        <button
+          className="secondary"
+          onClick={() => enrichDrafts({ all: true })}
+          disabled={busy || !stats.profile || !stats.drafts.length}
+          type="button"
+        >
+          Enrich older drafts
+        </button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy || !stats.drafts.length} type="button">Clear all drafts</button>
         <a href="/api/export" download><button className="secondary" type="button">Download final CSV</button></a>
         <p className="status">{status}</p>
@@ -458,12 +549,24 @@ export default function Home() {
           <label className="checkbox tight">
             <input
               type="checkbox"
+              checked={allSelected}
+              disabled={!stats.drafts.length}
+              onChange={(e) => selectAllRecords(e.target.checked)}
+            />
+            Select all ({stats.drafts.length})
+          </label>
+          <label className="checkbox tight">
+            <input
+              type="checkbox"
               checked={allUnsentSelected}
               disabled={!unsentCount}
               onChange={(e) => selectAllUnsent(e.target.checked)}
             />
             Select all unsent ({unsentCount})
           </label>
+          <button className="secondary compact" type="button" disabled={!selectedIds.length} onClick={clearSelection}>
+            Clear selection ({selectedIds.length})
+          </button>
         </div>
         <button
           onClick={() => sendDrafts({ all: true })}
@@ -481,6 +584,14 @@ export default function Home() {
           Send selected ({selectedUnsent})
         </button>
         <button
+          className="secondary"
+          onClick={() => enrichDrafts({ ids: selectedIds })}
+          disabled={busy || !stats.profile || !selectedIds.length}
+          type="button"
+        >
+          Enrich selected ({selectedIds.length})
+        </button>
+        <button
           className="secondary danger"
           onClick={deleteSelectedDrafts}
           disabled={busy || !selectedIds.length}
@@ -489,79 +600,188 @@ export default function Home() {
           Delete selected ({selectedIds.length})
         </button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy} type="button">Clear all drafts</button>
-        <table><thead><tr><th></th><th>To</th><th>Subject</th><th>Body</th><th>Status</th><th></th></tr></thead><tbody>
-          {stats.drafts.map((draft) => (
-            editingId === draft.id ? (
-              <tr key={draft.id} className="editing-row">
-                <td colSpan={6}>
-                  <form className="draft-edit" onSubmit={saveDraft}>
-                    <div className="fields">
-                      <div>
-                        <label htmlFor={`edit-to-${draft.id}`}>To</label>
-                        <input
-                          id={`edit-to-${draft.id}`}
-                          type="email"
-                          required
-                          value={editForm.recipient_email}
-                          onChange={(e) => setEditForm({ ...editForm, recipient_email: e.target.value })}
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor={`edit-subject-${draft.id}`}>Subject</label>
-                        <input
-                          id={`edit-subject-${draft.id}`}
-                          required
-                          value={editForm.subject}
-                          onChange={(e) => setEditForm({ ...editForm, subject: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                    <label htmlFor={`edit-body-${draft.id}`}>Body</label>
-                    <textarea
-                      id={`edit-body-${draft.id}`}
-                      required
-                      rows={8}
-                      value={editForm.body}
-                      onChange={(e) => setEditForm({ ...editForm, body: e.target.value })}
-                    />
-                    <div className="row-actions">
-                      <button disabled={busy} type="submit">Save draft</button>
-                      <button className="secondary" type="button" disabled={busy} onClick={cancelEdit}>Cancel</button>
-                    </div>
-                  </form>
-                </td>
+        <div className="table-wrap">
+          <table className="draft-table">
+            <thead>
+              <tr>
+                <th>
+                  <input
+                    id="select-all-drafts"
+                    type="checkbox"
+                    checked={allSelected}
+                    disabled={!stats.drafts.length}
+                    onChange={(e) => selectAllRecords(e.target.checked)}
+                    aria-label="Select all drafts"
+                  />
+                </th>
+                <th>Company</th>
+                <th>Location</th>
+                <th>Contact</th>
+                <th>Mobile</th>
+                <th>Email</th>
+                <th>Subject</th>
+                <th>Status</th>
+                <th>Called</th>
+                <th></th>
               </tr>
-            ) : (
-              <tr key={draft.id}>
-                <td>
+            </thead>
+            <tbody>
+              {stats.drafts.map((draft) => (
+                <tr key={draft.id} className={draft.called ? "row-called" : undefined}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(draft.id)}
+                      onChange={(e) => toggleSelected(draft.id, e.target.checked)}
+                      aria-label={`Select draft to ${draft.recipient_email}`}
+                    />
+                  </td>
+                  <td>{draft.company || "—"}</td>
+                  <td>{draft.location || "—"}</td>
+                  <td>{draft.contact_name || draft.recipient_name || "—"}</td>
+                  <td>{draft.phone || "—"}</td>
+                  <td className="ellipsis">{draft.recipient_email}</td>
+                  <td className="ellipsis">{draft.subject}</td>
+                  <td><span className={`badge ${draft.status}`}>{draft.status === "skipped" ? "skipped today" : draft.status}</span></td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.called)}
+                      disabled={busy}
+                      onChange={(e) => toggleCalled(draft, e.target.checked)}
+                      aria-label={`Mark called for ${draft.recipient_email}`}
+                    />
+                  </td>
+                  <td className="actions-cell">
+                    <button className="secondary compact" type="button" disabled={busy} onClick={() => openDetails(draft)}>
+                      View details
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {detailDraft && (
+          <div className="modal-backdrop" role="presentation" onClick={closeDetails}>
+            <div
+              className={`modal-card draft-card ${detailDraft.called ? "called" : ""}`}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Draft details"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="draft-card-head">
+                <h3>Draft details</h3>
+                <span className={`badge ${detailDraft.status}`}>{detailDraft.status === "skipped" ? "skipped today" : detailDraft.status}</span>
+                <label className="checkbox tight">
                   <input
                     type="checkbox"
-                    checked={selectedIds.includes(draft.id)}
-                    onChange={(e) => toggleSelected(draft.id, e.target.checked)}
-                    aria-label={`Select draft to ${draft.recipient_email}`}
+                    checked={Boolean(detailDraft.called)}
+                    disabled={busy}
+                    onChange={(e) => toggleCalled(detailDraft, e.target.checked)}
                   />
-                </td>
-                <td>{draft.recipient_email}</td>
-                <td>{draft.subject}</td>
-                <td className="body-cell">{draft.body}</td>
-                <td><span className={`badge ${draft.status}`}>{draft.status === "skipped" ? "skipped today" : draft.status}</span></td>
-                <td className="actions-cell">
-                  <button className="secondary compact" type="button" disabled={busy || editingId != null} onClick={() => startEdit(draft)}>
-                    Edit
-                  </button>
-                  <button
-                    className="secondary compact"
-                    type="button"
-                    disabled={busy || editingId != null || !stats.smtp.configured || draft.status === "sent" || draft.status === "skipped" || (bulkAttachResume && !hasResumeFile)}
-                    onClick={() => sendDrafts({ draftId: draft.id })}
-                  >
-                    Send
-                  </button>
-                </td>
-              </tr>
-            )
-          ))}
-        </tbody></table>
+                  Called
+                </label>
+                <button className="secondary compact" type="button" onClick={closeDetails}>Close</button>
+              </header>
+
+              {editingId === detailDraft.id ? (
+                <form className="draft-edit" onSubmit={saveDraft}>
+                  <div className="fields">
+                    <div>
+                      <label htmlFor={`edit-to-${detailDraft.id}`}>To</label>
+                      <input
+                        id={`edit-to-${detailDraft.id}`}
+                        type="email"
+                        required
+                        value={editForm.recipient_email}
+                        onChange={(e) => setEditForm({ ...editForm, recipient_email: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor={`edit-subject-${detailDraft.id}`}>Subject</label>
+                      <input
+                        id={`edit-subject-${detailDraft.id}`}
+                        required
+                        value={editForm.subject}
+                        onChange={(e) => setEditForm({ ...editForm, subject: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <label htmlFor={`edit-body-${detailDraft.id}`}>Body</label>
+                  <textarea
+                    id={`edit-body-${detailDraft.id}`}
+                    required
+                    rows={8}
+                    value={editForm.body}
+                    onChange={(e) => setEditForm({ ...editForm, body: e.target.value })}
+                  />
+                  <div className="row-actions">
+                    <button disabled={busy} type="submit">Save draft</button>
+                    <button className="secondary" type="button" disabled={busy} onClick={cancelEdit}>Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="meta-grid">
+                    <div><span className="meta-label">Company</span><strong>{detailDraft.company || "—"}</strong></div>
+                    <div><span className="meta-label">Location</span><strong>{detailDraft.location || "—"}</strong></div>
+                    <div><span className="meta-label">Contact</span><strong>{detailDraft.contact_name || detailDraft.recipient_name || "—"}</strong></div>
+                    <div><span className="meta-label">Mobile</span><strong>{detailDraft.phone || "—"}</strong></div>
+                    <div><span className="meta-label">Email</span><strong>{detailDraft.recipient_email}</strong></div>
+                    <div><span className="meta-label">Matched skills</span><strong>{detailDraft.matched_skills || "—"}</strong></div>
+                  </div>
+
+                  <div className="draft-block">
+                    <h3>Hiring summary</h3>
+                    <p>{detailDraft.hiring_summary || "Not extracted yet. Use Enrich older drafts / Enrich selected."}</p>
+                  </div>
+
+                  <div className="draft-block">
+                    <h3>Talking points (call)</h3>
+                    {detailDraft.talking_points ? (
+                      <ul className="talking-points">
+                        {detailDraft.talking_points.split("\n").filter(Boolean).map((point) => (
+                          <li key={point}>{point}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Not extracted yet.</p>
+                    )}
+                  </div>
+
+                  <div className="draft-block">
+                    <h3>Email</h3>
+                    <p><strong>Subject:</strong> {detailDraft.subject}</p>
+                    <pre className="email-body">{detailDraft.body}</pre>
+                  </div>
+
+                  <details className="job-post">
+                    <summary>Original job post</summary>
+                    <pre>{detailDraft.job_post || "Original post not stored for this draft. Enrich or regenerate to capture it."}</pre>
+                  </details>
+
+                  <div className="row-actions">
+                    <button className="secondary compact" type="button" disabled={busy} onClick={() => startEdit(detailDraft)}>
+                      Edit email
+                    </button>
+                    <button
+                      className="secondary compact"
+                      type="button"
+                      disabled={busy || !stats.smtp.configured || detailDraft.status === "sent" || detailDraft.status === "skipped" || (bulkAttachResume && !hasResumeFile)}
+                      onClick={() => sendDrafts({ draftId: detailDraft.id })}
+                    >
+                      Send
+                    </button>
+                    <button className="secondary compact" type="button" onClick={closeDetails}>Close</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </section>}
     </div>
   </main>;

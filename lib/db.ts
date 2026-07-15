@@ -80,6 +80,16 @@ ensureColumn("candidate_profile", "resume_filename", "TEXT NOT NULL DEFAULT ''")
 ensureColumn("candidate_profile", "resume_mime", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("candidate_profile", "resume_path", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("candidate_profile", "immediate_joiner", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("email_drafts", "phone", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "location", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "company", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "contact_name", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "hiring_summary", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "talking_points", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "job_post", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "matched_skills", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "called", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("email_drafts", "called_at", "TEXT NOT NULL DEFAULT ''");
 
 export type SmtpSettings = {
   host: string;
