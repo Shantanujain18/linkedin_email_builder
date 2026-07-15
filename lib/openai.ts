@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { CandidateProfile } from "./types";
+import { evaluateSkillFit, parseSkills } from "./skills";
 
 export const ROLE_KEYWORDS = [
   "Backend Engineer", "Backend Developer", "Software Engineer", "SDET",
@@ -8,6 +9,10 @@ export const ROLE_KEYWORDS = [
   "DevOps Engineer", "ML Engineer", "AI Engineer", "Data Scientist",
   "QA Engineer", "Team Lead"
 ];
+
+export type DraftResult =
+  | { skip: false; subject: string; body: string; matched_skills: string[] }
+  | { skip: true; reason: string };
 
 let openai: OpenAI | null = null;
 
@@ -49,10 +54,12 @@ function toCandidateProfile(raw: Record<string, unknown>): CandidateProfile {
 }
 
 function compactProfile(profile: CandidateProfile) {
+  const skills = parseSkills(profile.top_skills);
   return {
     name: profile.name,
     yoe: profile.yoe,
-    top_skills: profile.top_skills,
+    skills,
+    top_skills: skills.join(", "),
     current_role: profile.current_role,
     phone: profile.phone,
     email: profile.email,
@@ -61,10 +68,39 @@ function compactProfile(profile: CandidateProfile) {
 }
 
 function draftSystemPrompt(batch: boolean) {
-  const base = batch
-    ? `Write concise professional job-application outreach emails (under 140 words each). Return only JSON: {"drafts":[{"key":"...","subject":"...","body":"..."}]}. Include exactly one object per input key.`
-    : `Write a concise professional job-application outreach email (under 140 words). Return only JSON with string keys subject and body.`;
-  return `${base} Never invent experience. Mention a role only if the post supports it. If candidate.immediate_joiner is true, clearly mention availability to join immediately / can join immediately when it fits naturally. If false, do not claim immediate joining. Role keywords: ${ROLE_KEYWORDS.join(", ")}.`;
+  const shape = batch
+    ? `Return only JSON: {"drafts":[{"key":"...","skip":false,"matched_skills":["..."],"subject":"...","body":"..."}|{"key":"...","skip":true,"reason":"..."}]}. Include exactly one object per input key.`
+    : `Return only JSON with either {"skip":false,"matched_skills":["..."],"subject":"...","body":"..."} or {"skip":true,"reason":"..."}.`;
+
+  return [
+    "You write concise professional job-application outreach emails (under 140 words) only when the candidate is a genuine skill fit.",
+    shape,
+    "Skill-fit rules (strict):",
+    "1. Read the full job post. Identify the required/primary technologies and role.",
+    "2. Compare against candidate.skills. Prefer the strongest overlapping skills.",
+    "3. SKIP if the post centers on a stack the candidate does not have (example: Angular role when candidate skills are React/Python/Django — skip, do not apply).",
+    "4. React is NOT interchangeable with Angular or Vue. Django/Python is NOT interchangeable with Java/.NET unless the post clearly wants Python too.",
+    "5. Never write 'although I do not have X' or offer to learn a missing primary stack. If primary stack is missing, skip.",
+    "6. When fit is true, emphasize ONLY matched skills and relevant experience. Do not list unrelated skills as if they qualify for the role.",
+    "7. Never invent experience. Mention a target role title only if the post supports it.",
+    "8. If candidate.immediate_joiner is true, mention immediate joining availability naturally. If false, do not claim it.",
+    `Possible role keywords when relevant: ${ROLE_KEYWORDS.join(", ")}.`
+  ].join(" ");
+}
+
+function toDraftResult(raw: Record<string, unknown>): DraftResult {
+  if (raw.skip === true || raw.fit === false) {
+    return { skip: true, reason: asString(raw.reason) || "Not a strong skill match for this post." };
+  }
+  const subject = asString(raw.subject);
+  const body = asString(raw.body);
+  if (!subject || !body) {
+    return { skip: true, reason: asString(raw.reason) || "Model returned an incomplete draft." };
+  }
+  const matched = Array.isArray(raw.matched_skills)
+    ? raw.matched_skills.map(asString).filter(Boolean)
+    : [];
+  return { skip: false, subject, body, matched_skills: matched };
 }
 
 export async function extractCandidateProfile(resumeText: string): Promise<CandidateProfile> {
@@ -83,11 +119,17 @@ export async function extractCandidateProfile(resumeText: string): Promise<Candi
   return toCandidateProfile(jsonFromResponse(response.choices[0]?.message.content));
 }
 
-export async function draftEmail(profile: CandidateProfile, post: { postedBy: string; content: string; email: string }) {
+export async function draftEmail(
+  profile: CandidateProfile,
+  post: { postedBy: string; content: string; email: string }
+): Promise<DraftResult> {
+  const fit = evaluateSkillFit(profile.top_skills, post.content);
+  if (!fit.ok) return { skip: true, reason: fit.reason };
+
   const response = await client().chat.completions.create({
     model: model(),
-    temperature: 0.4,
-    max_tokens: 450,
+    temperature: 0.3,
+    max_tokens: 500,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: draftSystemPrompt(false) },
@@ -95,32 +137,50 @@ export async function draftEmail(profile: CandidateProfile, post: { postedBy: st
         role: "user",
         content: JSON.stringify({
           candidate: compactProfile(profile),
+          skill_fit_hint: {
+            matched_skills: fit.matchedSkills,
+            post_technologies: fit.postTechs
+          },
           recipient: post.postedBy,
-          job_post: post.content.slice(0, 1800),
+          job_post: post.content.slice(0, 2500),
           recipient_email: post.email
         })
       }
     ]
   });
-  const parsed = jsonFromResponse(response.choices[0]?.message.content) as { subject?: unknown; body?: unknown };
-  return { subject: asString(parsed.subject), body: asString(parsed.body) };
+  return toDraftResult(jsonFromResponse(response.choices[0]?.message.content) as Record<string, unknown>);
 }
 
 /** Generate several personalized drafts in one model call. */
 export async function draftEmailBatch(
   profile: CandidateProfile,
   posts: Array<{ key: string; postedBy: string; content: string; email: string }>
-): Promise<Record<string, { subject: string; body: string }>> {
+): Promise<Record<string, DraftResult>> {
   if (!posts.length) return {};
-  if (posts.length === 1) {
-    const one = await draftEmail(profile, posts[0]);
-    return { [posts[0].key]: one };
+
+  const results: Record<string, DraftResult> = {};
+  const eligible: typeof posts = [];
+
+  for (const post of posts) {
+    const fit = evaluateSkillFit(profile.top_skills, post.content);
+    if (!fit.ok) {
+      results[post.key] = { skip: true, reason: fit.reason };
+    } else {
+      eligible.push(post);
+    }
+  }
+
+  if (!eligible.length) return results;
+
+  if (eligible.length === 1) {
+    results[eligible[0].key] = await draftEmail(profile, eligible[0]);
+    return results;
   }
 
   const response = await client().chat.completions.create({
     model: model(),
-    temperature: 0.4,
-    max_tokens: Math.min(350 * posts.length, 2500),
+    temperature: 0.3,
+    max_tokens: Math.min(400 * eligible.length, 2800),
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: draftSystemPrompt(true) },
@@ -128,12 +188,19 @@ export async function draftEmailBatch(
         role: "user",
         content: JSON.stringify({
           candidate: compactProfile(profile),
-          posts: posts.map((post) => ({
-            key: post.key,
-            recipient: post.postedBy,
-            job_post: post.content.slice(0, 1200),
-            recipient_email: post.email
-          }))
+          posts: eligible.map((post) => {
+            const fit = evaluateSkillFit(profile.top_skills, post.content);
+            return {
+              key: post.key,
+              recipient: post.postedBy,
+              job_post: post.content.slice(0, 1800),
+              recipient_email: post.email,
+              skill_fit_hint: {
+                matched_skills: fit.matchedSkills,
+                post_technologies: fit.postTechs
+              }
+            };
+          })
         })
       }
     ]
@@ -141,22 +208,20 @@ export async function draftEmailBatch(
 
   const parsed = jsonFromResponse(response.choices[0]?.message.content) as { drafts?: unknown };
   const drafts = Array.isArray(parsed.drafts) ? parsed.drafts : [];
-  const byKey: Record<string, { subject: string; body: string }> = {};
 
   for (const item of drafts) {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     const key = asString(row.key);
     if (!key) continue;
-    byKey[key] = { subject: asString(row.subject), body: asString(row.body) };
+    results[key] = toDraftResult(row);
   }
 
-  // Fill any missing keys with individual calls so generation still completes.
-  const missing = posts.filter((post) => !byKey[post.key]?.subject || !byKey[post.key]?.body);
+  const missing = eligible.filter((post) => results[post.key] == null);
   if (missing.length) {
     const fallbacks = await Promise.all(missing.map(async (post) => [post.key, await draftEmail(profile, post)] as const));
-    for (const [key, value] of fallbacks) byKey[key] = value;
+    for (const [key, value] of fallbacks) results[key] = value;
   }
 
-  return byKey;
+  return results;
 }

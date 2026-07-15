@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { clearDrafts, db, getProfile, now } from "@/lib/db";
+import { clearDrafts, db, deleteDraftsByIds, getProfile, now } from "@/lib/db";
 import { draftEmailBatch } from "@/lib/openai";
 import { mapPool } from "@/lib/pool";
 import type { CandidateProfile } from "@/lib/types";
@@ -17,8 +17,18 @@ type PendingDraft = {
   email: string;
 };
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
+    const body = await request.json().catch(() => ({}));
+    const ids = Array.isArray(body.ids)
+      ? body.ids.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
+      : [];
+
+    if (ids.length) {
+      const deleted = deleteDraftsByIds(ids);
+      return NextResponse.json({ deleted, ids });
+    }
+
     const deleted = clearDrafts();
     return NextResponse.json({ deleted });
   } catch (error) {
@@ -114,13 +124,24 @@ export async function POST() {
       VALUES (?, ?, ?, ?, ?, ?, ?)`);
 
     let created = 0;
+    let skipped = 0;
+    const skipReasons: Array<{ postId: number; reason: string }> = [];
+
     await mapPool(batches, BATCH_CONCURRENCY, async (batch) => {
       const generated = await draftEmailBatch(profile, batch);
       const timestamp = now();
       const write = db.transaction(() => {
         for (const item of batch) {
           const draft = generated[item.key];
-          if (!draft?.subject || !draft?.body) continue;
+          if (!draft || draft.skip) {
+            skipped += 1;
+            skipReasons.push({ postId: item.postId, reason: draft && "reason" in draft ? draft.reason : "Skipped." });
+            continue;
+          }
+          if (!draft.subject || !draft.body) {
+            skipped += 1;
+            continue;
+          }
           insert.run(item.postId, item.email, item.postedBy, draft.subject, draft.body, timestamp, timestamp);
           created += 1;
         }
@@ -128,7 +149,12 @@ export async function POST() {
       write();
     });
 
-    return NextResponse.json({ created, pending: pending.length });
+    return NextResponse.json({
+      created,
+      skipped,
+      pending: pending.length,
+      skip_reasons: skipReasons.slice(0, 20)
+    });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Draft generation failed." }, { status: 500 });
   }

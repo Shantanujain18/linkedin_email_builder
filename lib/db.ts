@@ -149,12 +149,30 @@ export function getPublicProfile() {
 }
 
 export function setImmediateJoiner(value: boolean) {
+  return updateProfile({ immediate_joiner: value });
+}
+
+export function updateProfile(fields: { immediate_joiner?: boolean; top_skills?: string }) {
   const existing = getProfile();
   if (!existing) return null;
-  db.prepare("UPDATE candidate_profile SET immediate_joiner = ?, updated_at = ? WHERE id = 1").run(
-    value ? 1 : 0,
-    now()
-  );
+
+  const updates: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (typeof fields.immediate_joiner === "boolean") {
+    updates.push("immediate_joiner = ?");
+    values.push(fields.immediate_joiner ? 1 : 0);
+  }
+  if (typeof fields.top_skills === "string") {
+    updates.push("top_skills = ?");
+    values.push(fields.top_skills.trim());
+  }
+  if (!updates.length) return getPublicProfile();
+
+  updates.push("updated_at = ?");
+  values.push(now());
+  values.push(1);
+  db.prepare(`UPDATE candidate_profile SET ${updates.join(", ")} WHERE id = ?`).run(...values);
   return getPublicProfile();
 }
 
@@ -164,6 +182,14 @@ export function getPosts() {
 
 export function clearDrafts() {
   const result = db.prepare("DELETE FROM email_drafts").run();
+  return result.changes;
+}
+
+export function deleteDraftsByIds(ids: number[]) {
+  const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
+  if (!unique.length) return 0;
+  const placeholders = unique.map(() => "?").join(",");
+  const result = db.prepare(`DELETE FROM email_drafts WHERE id IN (${placeholders})`).run(...unique);
   return result.changes;
 }
 

@@ -42,11 +42,21 @@ const defaultSmtp: Smtp = {
   has_password: false
 };
 
+function parseSkills(raw: string) {
+  return raw
+    .split(/[,|\n]/)
+    .map((skill) => skill.trim())
+    .filter(Boolean)
+    .filter((skill, index, list) => list.findIndex((item) => item.toLowerCase() === skill.toLowerCase()) === index);
+}
+
 export default function Home() {
   const [stats, setStats] = useState<Stats>({ profile: null, posts: [], drafts: [], smtp: defaultSmtp });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [immediateJoiner, setImmediateJoiner] = useState(false);
+  const [skillList, setSkillList] = useState<string[]>([]);
+  const [newSkill, setNewSkill] = useState("");
   const [smtpForm, setSmtpForm] = useState({
     host: defaultSmtp.host,
     port: String(defaultSmtp.port),
@@ -67,6 +77,7 @@ export default function Home() {
     const smtp = data.smtp || defaultSmtp;
     setStats({ profile: data.profile || null, posts: data.posts || [], drafts: data.drafts || [], smtp });
     setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
+    setSkillList(parseSkills(String(data.profile?.top_skills || "")));
     setBulkAttachResume(smtp.attach_resume !== false);
     setSmtpForm((prev) => ({
       host: smtp.host || "smtp.gmail.com",
@@ -78,12 +89,8 @@ export default function Home() {
       attach_resume: smtp.attach_resume !== false
     }));
     setSelectedIds((prev) => {
-      const eligible = new Set(
-        (data.drafts || [])
-          .filter((draft: Draft) => draft.status !== "sent" && draft.status !== "skipped")
-          .map((draft: Draft) => draft.id)
-      );
-      return prev.filter((id) => eligible.has(id));
+      const existing = new Set((data.drafts || []).map((draft: Draft) => draft.id));
+      return prev.filter((id) => existing.has(id));
     });
   }
   useEffect(() => { refresh().catch(() => {}); }, []);
@@ -94,6 +101,39 @@ export default function Home() {
     const response = await fetch("/api/resume", { method: "POST", body: form });
     const data = await response.json(); setBusy(false); setStatus(data.error || "Candidate profile saved.");
     if (response.ok) refresh();
+  }
+
+  async function persistSkills(nextSkills: string[]) {
+    setSkillList(nextSkills);
+    if (!stats.profile) return;
+    setBusy(true); setStatus("Saving skills…");
+    const response = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ top_skills: nextSkills.join(", ") })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(data.error || "Skills updated. Regenerate drafts to use them in new emails.");
+    if (response.ok) refresh();
+    else setSkillList(parseSkills(String(stats.profile.top_skills || "")));
+  }
+
+  function addSkill(event: React.FormEvent) {
+    event.preventDefault();
+    const skill = newSkill.trim().replace(/,+/g, " ").replace(/\s+/g, " ");
+    if (!skill) return;
+    const exists = skillList.some((item) => item.toLowerCase() === skill.toLowerCase());
+    if (exists) {
+      setStatus(`"${skill}" is already in your skills list.`);
+      setNewSkill("");
+      return;
+    }
+    setNewSkill("");
+    persistSkills([...skillList, skill]);
+  }
+
+  function removeSkill(skill: string) {
+    persistSkills(skillList.filter((item) => item !== skill));
   }
 
   async function toggleImmediateJoiner(checked: boolean) {
@@ -124,10 +164,17 @@ export default function Home() {
   }
 
   async function generate() {
-    setBusy(true); setStatus("Generating personalized email drafts in parallel…");
+    setBusy(true); setStatus("Generating skill-matched email drafts…");
     const response = await fetch("/api/drafts", { method: "POST" });
-    const data = await response.json(); setBusy(false); setStatus(data.error || `Created ${data.created || 0} drafts.`);
-    if (response.ok) refresh();
+    const data = await response.json(); setBusy(false);
+    if (!response.ok) {
+      setStatus(data.error || "Draft generation failed.");
+      return;
+    }
+    const parts = [`Created ${data.created || 0} drafts`];
+    if (data.skipped) parts.push(`${data.skipped} skipped (weak/no skill match)`);
+    setStatus(parts.join(" · ") + ".");
+    refresh();
   }
 
   async function clearAllDrafts() {
@@ -138,6 +185,24 @@ export default function Home() {
     setStatus(data.error || `Cleared ${data.deleted || 0} drafts.`);
     if (response.ok) {
       setSelectedIds([]);
+      refresh();
+    }
+  }
+
+  async function deleteSelectedDrafts() {
+    if (!selectedIds.length) return;
+    if (!window.confirm(`Delete ${selectedIds.length} selected draft(s)? This cannot be undone.`)) return;
+    setBusy(true); setStatus("Deleting selected drafts…");
+    const response = await fetch("/api/drafts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: selectedIds })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(data.error || `Deleted ${data.deleted || 0} draft(s).`);
+    if (response.ok) {
+      setSelectedIds([]);
+      cancelEdit();
       refresh();
     }
   }
@@ -247,7 +312,11 @@ export default function Home() {
   }
 
   const unsentCount = stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped").length;
-  const selectedUnsent = selectedIds.length;
+  const selectedUnsentIds = selectedIds.filter((id) => {
+    const draft = stats.drafts.find((item) => item.id === id);
+    return draft && draft.status !== "sent" && draft.status !== "skipped";
+  });
+  const selectedUnsent = selectedUnsentIds.length;
   const allUnsentSelected = unsentCount > 0 && selectedUnsent === unsentCount;
   const hasResumeFile = Boolean(stats.profile?.has_resume_file);
 
@@ -271,14 +340,54 @@ export default function Home() {
           />
           Immediate joiner (mention availability in generated emails)
         </label>
-        {stats.profile && <p>
-          {String(stats.profile.name || "Candidate")} · {String(stats.profile.current_role || "Role not detected")}<br />
-          {String(stats.profile.top_skills || "Skills not detected")}<br />
-          {immediateJoiner ? "Immediate joiner: yes" : "Immediate joiner: no"}<br />
-          {hasResumeFile
-            ? `Resume file ready to attach: ${String(stats.profile.resume_filename || "stored file")}`
-            : "Re-upload resume to enable email attachments."}
-        </p>}
+        {stats.profile && (
+          <>
+            <div className="skills-panel">
+              <label>Skills</label>
+              {skillList.length === 0 ? (
+                <p className="hint">No skills yet. Add one below.</p>
+              ) : (
+                <ul className="skill-list">
+                  {skillList.map((skill) => (
+                    <li key={skill}>
+                      <span>{skill}</span>
+                      <button
+                        type="button"
+                        className="secondary compact danger"
+                        disabled={busy}
+                        onClick={() => removeSkill(skill)}
+                        aria-label={`Remove ${skill}`}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <form className="skill-add" onSubmit={addSkill}>
+                <label htmlFor="new-skill">Add skill</label>
+                <div className="skill-add-row">
+                  <input
+                    id="new-skill"
+                    value={newSkill}
+                    disabled={busy}
+                    onChange={(e) => setNewSkill(e.target.value)}
+                    placeholder="e.g. TypeScript"
+                    autoComplete="off"
+                  />
+                  <button type="submit" disabled={busy || !newSkill.trim()}>Add</button>
+                </div>
+              </form>
+            </div>
+            <p>
+              {String(stats.profile.name || "Candidate")} · {String(stats.profile.current_role || "Role not detected")}<br />
+              {immediateJoiner ? "Immediate joiner: yes" : "Immediate joiner: no"}<br />
+              {hasResumeFile
+                ? `Resume file ready to attach: ${String(stats.profile.resume_filename || "stored file")}`
+                : "Re-upload resume to enable email attachments."}
+            </p>
+          </>
+        )}
       </section>
       <section className="card">
         <h2>2. LinkedIn posts CSV</h2>
@@ -291,7 +400,7 @@ export default function Home() {
       </section>
       <section className="card wide">
         <h2>3. Generate email drafts</h2>
-        <p>Only posts containing an email address are drafted. If immediate joiner is checked, new drafts will mention you can join immediately. Clear and regenerate to refresh existing drafts.</p>
+        <p>Only posts containing an email address are drafted, and only when your skills meaningfully match the job. Mismatched stacks (for example Angular vs React/Python) are skipped. Clear and regenerate to refresh existing drafts.</p>
         <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length}>Generate drafts</button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy || !stats.drafts.length} type="button">Clear all drafts</button>
         <a href="/api/export" download><button className="secondary" type="button">Download final CSV</button></a>
@@ -365,11 +474,19 @@ export default function Home() {
         </button>
         <button
           className="secondary"
-          onClick={() => sendDrafts({ draftIds: selectedIds })}
+          onClick={() => sendDrafts({ draftIds: selectedUnsentIds })}
           disabled={busy || !stats.smtp.configured || !selectedUnsent || (bulkAttachResume && !hasResumeFile)}
           type="button"
         >
           Send selected ({selectedUnsent})
+        </button>
+        <button
+          className="secondary danger"
+          onClick={deleteSelectedDrafts}
+          disabled={busy || !selectedIds.length}
+          type="button"
+        >
+          Delete selected ({selectedIds.length})
         </button>
         <button className="secondary danger" onClick={clearAllDrafts} disabled={busy} type="button">Clear all drafts</button>
         <table><thead><tr><th></th><th>To</th><th>Subject</th><th>Body</th><th>Status</th><th></th></tr></thead><tbody>
@@ -419,7 +536,6 @@ export default function Home() {
                 <td>
                   <input
                     type="checkbox"
-                    disabled={draft.status === "sent" || draft.status === "skipped"}
                     checked={selectedIds.includes(draft.id)}
                     onChange={(e) => toggleSelected(draft.id, e.target.checked)}
                     aria-label={`Select draft to ${draft.recipient_email}`}
