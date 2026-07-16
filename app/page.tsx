@@ -52,7 +52,7 @@ type Stats = {
 };
 
 type PageId = "resume" | "csv" | "generate" | "smtp" | "send";
-type StatusFilter = "all" | "unsent" | "sent" | "skipped";
+type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped";
 type PageSize = 25 | 50 | 100;
 
 const PAGES: Array<{ id: PageId; label: string }> = [
@@ -584,6 +584,7 @@ export default function Home() {
     const q = searchQuery.trim().toLowerCase();
     return stats.drafts.filter((draft) => {
       if (statusFilter === "unsent" && !isUnsent(draft)) return false;
+      if (statusFilter === "draft" && draft.status !== "draft") return false;
       if (statusFilter === "sent" && draft.status !== "sent") return false;
       if (statusFilter === "skipped" && draft.status !== "skipped") return false;
       if (!q) return true;
@@ -1013,6 +1014,7 @@ export default function Home() {
                   >
                     <option value="all">All statuses</option>
                     <option value="unsent">Unsent</option>
+                    <option value="draft">Draft</option>
                     <option value="sent">Sent</option>
                     <option value="skipped">Skipped</option>
                   </select>
@@ -1054,7 +1056,8 @@ export default function Home() {
                           <th style={{ width: 120 }}>Contact</th>
                           <th style={{ width: 110 }}>Mobile</th>
                           <th style={{ width: 160 }}>Email</th>
-                          <th>Subject</th>
+                          <th style={{ width: 180 }}>Subject</th>
+                          <th>Body</th>
                           <th style={{ width: 80 }}>Status</th>
                           <th style={{ width: 64 }}>Called</th>
                           <th style={{ width: 72 }}>Replied</th>
@@ -1083,6 +1086,7 @@ export default function Home() {
                               <td className="col-mobile" title={phone}>{phone}</td>
                               <td className="col-email" title={draft.recipient_email}>{draft.recipient_email}</td>
                               <td className="col-subject" title={draft.subject}>{draft.subject}</td>
+                              <td className="col-body">{draft.body || "—"}</td>
                               <td>{statusBadge(draft.status)}</td>
                               <td>
                                 <input
