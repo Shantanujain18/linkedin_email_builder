@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import nodemailer from "nodemailer";
 import type { SmtpSettings } from "./db";
 
@@ -7,7 +6,7 @@ export async function sendMail(options: {
   to: string;
   subject: string;
   body: string;
-  attachment?: { filename: string; path: string; contentType?: string } | null;
+  attachment?: { filename: string; content: Buffer; contentType?: string } | null;
 }) {
   const { smtp, to, subject, body, attachment } = options;
   if (!smtp.user || !smtp.pass) {
@@ -22,11 +21,11 @@ export async function sendMail(options: {
   });
 
   const attachments =
-    attachment && attachment.path && fs.existsSync(attachment.path)
+    attachment && attachment.content?.length
       ? [
           {
             filename: attachment.filename || "resume.pdf",
-            path: attachment.path,
+            content: attachment.content,
             contentType: attachment.contentType || undefined
           }
         ]

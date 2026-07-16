@@ -6,27 +6,30 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "migrate:sqlite": "MIGRATE_CLEAR=1 node scripts/migrate-sqlite-to-supabase.mjs"
   },
   "dependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.110.6",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^11.10.0",
     "csv-parse": "^6.1.0",
+    "drizzle-orm": "^0.45.2",
     "mammoth": "^1.9.1",
     "next": "^15.3.2",
     "nodemailer": "^9.0.3",
     "openai": "^4.104.0",
     "pdf-parse": "^1.1.1",
+    "postgres": "^3.4.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
     "@types/nodemailer": "^8.0.1",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^5.8.3"
   }
 }

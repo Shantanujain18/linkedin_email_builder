@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function GET() {
   const user = await requireUser();
   if (!isUser(user)) return user;
-  return NextResponse.json({ smtp: getPublicSmtpSettings(user.id) });
+  return NextResponse.json({ smtp: await getPublicSmtpSettings(user.id) });
 }
 
 export async function POST(request: Request) {
@@ -24,13 +24,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "SMTP port must be between 1 and 65535." }, { status: 400 });
     }
 
-    const existing = getPublicSmtpSettings(user.id);
+    const existing = await getPublicSmtpSettings(user.id);
     const pass = typeof body.pass === "string" ? body.pass : "";
     if (!pass.trim() && !existing.has_password) {
       return NextResponse.json({ error: "App Password is required." }, { status: 400 });
     }
 
-    saveSmtpSettings(user.id, {
+    await saveSmtpSettings(user.id, {
       host,
       port,
       secure: Boolean(body.secure) || port === 465,
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       attach_resume: body.attach_resume !== false && body.attach_resume !== 0 && body.attach_resume !== "0"
     });
 
-    return NextResponse.json({ smtp: getPublicSmtpSettings(user.id) });
+    return NextResponse.json({ smtp: await getPublicSmtpSettings(user.id) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to save SMTP settings." }, { status: 500 });
   }

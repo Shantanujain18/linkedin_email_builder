@@ -182,7 +182,7 @@ function PageHeader({
 export default function Home() {
   const router = useRouter();
   const [authReady, setAuthReady] = useState(false);
-  const [user, setUser] = useState<{ id: number; email: string; name: string } | null>(null);
+  const [user, setUser] = useState<{ id: string; email: string; name: string } | null>(null);
   const [currentPage, setCurrentPage] = useState<PageId>("resume");
   const [stats, setStats] = useState<Stats>({ profile: null, posts: [], drafts: [], smtp: defaultSmtp });
   const [status, setStatus] = useState("");
@@ -248,7 +248,9 @@ export default function Home() {
   async function signOut() {
     setBusy(true);
     try {
-      await fetch("/api/auth", { method: "DELETE" });
+      const { createClient } = await import("@/utils/supabase/client");
+      const supabase = createClient();
+      await supabase.auth.signOut();
       router.replace("/login");
       router.refresh();
     } finally {

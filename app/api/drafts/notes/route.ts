@@ -13,10 +13,10 @@ export async function GET(request: Request) {
     if (!Number.isFinite(draftId) || draftId < 1) {
       return NextResponse.json({ error: "draftId is required." }, { status: 400 });
     }
-    if (!userOwnsDraft(user.id, draftId)) {
+    if (!(await userOwnsDraft(user.id, draftId))) {
       return NextResponse.json({ error: "Draft not found." }, { status: 404 });
     }
-    return NextResponse.json({ notes: getNotesForDraft(draftId) });
+    return NextResponse.json({ notes: await getNotesForDraft(draftId) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to load notes." }, { status: 500 });
   }
@@ -32,11 +32,11 @@ export async function POST(request: Request) {
     if (!Number.isFinite(draftId) || draftId < 1) {
       return NextResponse.json({ error: "draftId is required." }, { status: 400 });
     }
-    if (!userOwnsDraft(user.id, draftId)) {
+    if (!(await userOwnsDraft(user.id, draftId))) {
       return NextResponse.json({ error: "Draft not found." }, { status: 404 });
     }
-    const note = addDraftNote(draftId, String(body.note || ""));
-    return NextResponse.json({ note, notes: getNotesForDraft(draftId) });
+    const note = await addDraftNote(draftId, String(body.note || ""));
+    return NextResponse.json({ note, notes: await getNotesForDraft(draftId) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to add note." }, { status: 500 });
   }
@@ -52,7 +52,7 @@ export async function DELETE(request: Request) {
     if (!Number.isFinite(id) || id < 1) {
       return NextResponse.json({ error: "Note id is required." }, { status: 400 });
     }
-    const deleted = deleteDraftNote(user.id, id);
+    const deleted = await deleteDraftNote(user.id, id);
     if (!deleted) return NextResponse.json({ error: "Note not found." }, { status: 404 });
     return NextResponse.json({ deleted });
   } catch (error) {

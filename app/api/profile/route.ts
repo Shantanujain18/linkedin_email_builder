@@ -9,7 +9,7 @@ export async function PATCH(request: Request) {
     const user = await requireUser();
     if (!isUser(user)) return user;
 
-    if (!getPublicProfile(user.id)) {
+    if (!(await getPublicProfile(user.id))) {
       return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
     }
     const body = await request.json();
@@ -33,7 +33,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Provide immediate_joiner and/or top_skills to update." }, { status: 400 });
     }
 
-    const profile = updateProfile(user.id, patch);
+    const profile = await updateProfile(user.id, patch);
     return NextResponse.json({ profile });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to update profile." }, { status: 500 });

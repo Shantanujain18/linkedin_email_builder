@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,13 +17,9 @@ export default function LoginPage() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "signin", email, password })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Sign in failed.");
+      const supabase = createClient();
+      const { error: signError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signError) throw signError;
       router.replace("/");
       router.refresh();
     } catch (err) {

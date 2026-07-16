@@ -1,30 +1,21 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
 import { isUser, requireUser } from "@/lib/auth";
 import {
-  db,
   emailedTodaySet,
+  getDraftsForSend,
   getProfile,
   getSmtpSettings,
   normalizeEmail,
-  now,
   recordEmailSent,
   repliedEmailSet,
   todayKey,
+  updateDraftStatus,
   wasEmailedToday
 } from "@/lib/db";
 import { sendMail } from "@/lib/mail";
+import { downloadResume } from "@/lib/storage";
 
 export const runtime = "nodejs";
-
-type DraftRow = {
-  id: number;
-  recipient_email: string;
-  subject: string;
-  body: string;
-  status: string;
-  replied?: number;
-};
 
 export async function POST(request: Request) {
   try {
@@ -32,7 +23,7 @@ export async function POST(request: Request) {
     if (!isUser(user)) return user;
 
     const body = await request.json().catch(() => ({}));
-    const smtp = getSmtpSettings(user.id);
+    const smtp = await getSmtpSettings(user.id);
     if (!smtp?.user || !smtp.pass) {
       return NextResponse.json({ error: "Configure SMTP details (email + App Password) first." }, { status: 400 });
     }
@@ -49,48 +40,36 @@ export async function POST(request: Request) {
     const attachResume =
       body.attach_resume === undefined ? smtp.attach_resume : Boolean(body.attach_resume);
 
-    let drafts: DraftRow[];
-    if (sendAll) {
-      drafts = db
-        .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
-          WHERE user_id = ? AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
-        .all(user.id) as DraftRow[];
-    } else if (draftIds.length) {
-      const placeholders = draftIds.map(() => "?").join(",");
-      drafts = db
-        .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
-          WHERE user_id = ? AND id IN (${placeholders}) AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
-        .all(user.id, ...draftIds) as DraftRow[];
-    } else {
-      const draft = db
-        .prepare("SELECT id, recipient_email, subject, body, status, replied FROM email_drafts WHERE id = ? AND user_id = ?")
-        .get(draftId, user.id) as DraftRow | undefined;
-      drafts = draft ? [draft] : [];
-    }
+    const drafts = await getDraftsForSend(user.id, {
+      all: sendAll,
+      draftIds,
+      draftId: sendAll || draftIds.length ? null : draftId
+    });
 
     if (!drafts.length) {
       return NextResponse.json({ error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." }, { status: 404 });
     }
 
-    const profile = getProfile(user.id);
-    const attachment =
-      attachResume && profile?.resume_path && fs.existsSync(String(profile.resume_path))
-        ? {
-            filename: String(profile.resume_filename || "resume.pdf"),
-            path: String(profile.resume_path),
-            contentType: String(profile.resume_mime || "") || undefined
-          }
-        : null;
-
-    if (attachResume && !attachment) {
-      return NextResponse.json({
-        error: "Attach resume is enabled, but no resume file is stored. Re-upload the resume first."
-      }, { status: 400 });
+    const profile = await getProfile(user.id);
+    let attachment: { filename: string; content: Buffer; contentType?: string } | null = null;
+    if (attachResume) {
+      const path = String(profile?.resume_path || "");
+      const downloaded = path ? await downloadResume(path) : null;
+      if (!downloaded) {
+        return NextResponse.json({
+          error: "Attach resume is enabled, but no resume file is stored. Re-upload the resume first."
+        }, { status: 400 });
+      }
+      attachment = {
+        filename: String(profile?.resume_filename || "resume.pdf"),
+        content: downloaded.buffer,
+        contentType: String(profile?.resume_mime || downloaded.contentType || "") || undefined
+      };
     }
 
     const day = todayKey();
-    const alreadyToday = emailedTodaySet(user.id, day);
-    const repliedEmails = repliedEmailSet(user.id);
+    const alreadyToday = await emailedTodaySet(user.id, day);
+    const repliedEmails = await repliedEmailSet(user.id);
     const sentThisRun = new Set<string>();
 
     let sent = 0;
@@ -99,14 +78,14 @@ export async function POST(request: Request) {
     const skippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
 
     for (const draft of drafts) {
-      const email = normalizeEmail(draft.recipient_email);
+      const email = normalizeEmail(draft.recipientEmail);
       if (!email) {
         skipped += 1;
-        skippedDrafts.push({ id: draft.id, email: draft.recipient_email, reason: "Missing recipient email." });
+        skippedDrafts.push({ id: draft.id, email: draft.recipientEmail, reason: "Missing recipient email." });
         continue;
       }
 
-      if (Number(draft.replied) === 1 || repliedEmails.has(email)) {
+      if (draft.replied || repliedEmails.has(email)) {
         skipped += 1;
         skippedDrafts.push({
           id: draft.id,
@@ -116,38 +95,33 @@ export async function POST(request: Request) {
         continue;
       }
 
-      if (alreadyToday.has(email) || sentThisRun.has(email) || wasEmailedToday(user.id, email, day)) {
+      if (alreadyToday.has(email) || sentThisRun.has(email) || (await wasEmailedToday(user.id, email, day))) {
         skipped += 1;
         skippedDrafts.push({
           id: draft.id,
           email,
           reason: "Already emailed this address today."
         });
-        db.prepare("UPDATE email_drafts SET status = 'skipped', updated_at = ? WHERE id = ? AND user_id = ? AND status != 'sent'").run(
-          now(),
-          draft.id,
-          user.id
-        );
+        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
         continue;
       }
 
       try {
         await sendMail({
           smtp,
-          to: draft.recipient_email,
+          to: draft.recipientEmail,
           subject: draft.subject,
           body: draft.body,
           attachment
         });
-        const timestamp = now();
-        db.prepare("UPDATE email_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND user_id = ?").run(timestamp, draft.id, user.id);
-        recordEmailSent(user.id, email, draft.id, day);
+        await updateDraftStatus(user.id, draft.id, "sent");
+        await recordEmailSent(user.id, email, draft.id, day);
         alreadyToday.add(email);
         sentThisRun.add(email);
         sent += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Send failed.";
-        db.prepare("UPDATE email_drafts SET status = 'failed', updated_at = ? WHERE id = ? AND user_id = ?").run(now(), draft.id, user.id);
+        await updateDraftStatus(user.id, draft.id, "failed");
         errors.push({ id: draft.id, error: message });
       }
     }

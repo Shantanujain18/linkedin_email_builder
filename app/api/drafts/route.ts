@@ -1,6 +1,17 @@
 import { NextResponse } from "next/server";
 import { isUser, requireUser } from "@/lib/auth";
-import { clearDrafts, db, deleteDraftsByIds, getProfile, now, setDraftReplied } from "@/lib/db";
+import {
+  clearDrafts,
+  deleteDraftsByIds,
+  existingDraftPostIds,
+  getDraftStatus,
+  getPostsWithEmails,
+  getProfile,
+  insertDraft,
+  setDraftReplied,
+  updateDraftCalled,
+  updateDraftContent
+} from "@/lib/db";
 import { draftEmailBatch } from "@/lib/openai";
 import { mapPool } from "@/lib/pool";
 import type { CandidateProfile } from "@/lib/types";
@@ -21,8 +32,8 @@ type PendingDraft = {
 function mapDraft(draft: Record<string, unknown>) {
   return {
     ...draft,
-    called: Number(draft.called) === 1,
-    replied: Number(draft.replied) === 1
+    called: Boolean(draft.called),
+    replied: Boolean(draft.replied)
   };
 }
 
@@ -37,11 +48,11 @@ export async function DELETE(request: Request) {
       : [];
 
     if (ids.length) {
-      const deleted = deleteDraftsByIds(user.id, ids);
+      const deleted = await deleteDraftsByIds(user.id, ids);
       return NextResponse.json({ deleted, ids });
     }
 
-    const deleted = clearDrafts(user.id);
+    const deleted = await clearDrafts(user.id);
     return NextResponse.json({ deleted });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to clear drafts." }, { status: 500 });
@@ -59,29 +70,21 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Draft id is required." }, { status: 400 });
     }
 
-    const existing = db.prepare("SELECT id, status FROM email_drafts WHERE id = ? AND user_id = ?").get(id, user.id) as
-      | { id: number; status: string }
-      | undefined;
+    const existing = await getDraftStatus(user.id, id);
     if (!existing) return NextResponse.json({ error: "Draft not found." }, { status: 404 });
 
     const flagOnly =
       body.recipient_email == null && body.subject == null && body.body == null;
 
     if (flagOnly && typeof body.replied === "boolean") {
-      const draft = setDraftReplied(user.id, id, body.replied);
+      const draft = await setDraftReplied(user.id, id, body.replied);
       if (!draft) return NextResponse.json({ error: "Draft not found." }, { status: 404 });
       return NextResponse.json({ draft: mapDraft(draft) });
     }
 
     if (flagOnly && typeof body.called === "boolean") {
-      const timestamp = now();
-      db.prepare(`UPDATE email_drafts
-        SET called = ?, called_at = ?, updated_at = ?
-        WHERE id = ? AND user_id = ?`).run(body.called ? 1 : 0, body.called ? timestamp : "", timestamp, id, user.id);
-      const draft = db.prepare(`SELECT id, recipient_email, recipient_name, subject, body, status,
-        phone, location, company, contact_name, hiring_summary, talking_points, job_post, matched_skills,
-        called, called_at, replied, replied_at
-        FROM email_drafts WHERE id = ? AND user_id = ?`).get(id, user.id) as Record<string, unknown>;
+      const draft = await updateDraftCalled(user.id, id, body.called);
+      if (!draft) return NextResponse.json({ error: "Draft not found." }, { status: 404 });
       return NextResponse.json({ draft: mapDraft(draft) });
     }
 
@@ -92,15 +95,13 @@ export async function PATCH(request: Request) {
     if (!subject) return NextResponse.json({ error: "Subject is required." }, { status: 400 });
 
     const nextStatus = existing.status === "sent" ? "sent" : "draft";
-    db.prepare(`UPDATE email_drafts
-      SET recipient_email = ?, subject = ?, body = ?, status = ?, updated_at = ?
-      WHERE id = ? AND user_id = ?`).run(recipientEmail, subject, draftBody, nextStatus, now(), id, user.id);
-
-    const draft = db.prepare(`SELECT id, recipient_email, recipient_name, subject, body, status,
-      phone, location, company, contact_name, hiring_summary, talking_points, job_post, matched_skills,
-      called, called_at, replied, replied_at
-      FROM email_drafts WHERE id = ? AND user_id = ?`).get(id, user.id) as Record<string, unknown>;
-    return NextResponse.json({ draft: mapDraft(draft) });
+    const draft = await updateDraftContent(user.id, id, {
+      recipient_email: recipientEmail,
+      subject,
+      body: draftBody,
+      status: nextStatus
+    });
+    return NextResponse.json({ draft: mapDraft(draft || {}) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to update draft." }, { status: 500 });
   }
@@ -117,7 +118,7 @@ export async function POST() {
     const user = await requireUser();
     if (!isUser(user)) return user;
 
-    const profileRow = getProfile(user.id);
+    const profileRow = await getProfile(user.id);
     if (!profileRow?.resume_text) return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
 
     const profile: CandidateProfile = {
@@ -131,29 +132,23 @@ export async function POST() {
       immediate_joiner: Number(profileRow.immediate_joiner) === 1
     };
 
-    const posts = db
-      .prepare("SELECT * FROM linkedin_posts WHERE user_id = ? AND emails_json != '[]' ORDER BY id ASC")
-      .all(user.id) as Array<Record<string, string | number>>;
+    const posts = await getPostsWithEmails(user.id);
     if (!posts.length) return NextResponse.json({ error: "No imported posts contain email addresses." }, { status: 400 });
 
-    const existingPostIds = new Set(
-      (db.prepare("SELECT post_id FROM email_drafts WHERE user_id = ?").all(user.id) as Array<{ post_id: number }>).map(
-        (row) => row.post_id
-      )
-    );
+    const existingPostIds = await existingDraftPostIds(user.id);
 
     const pending: PendingDraft[] = [];
     for (const post of posts) {
       const postId = Number(post.id);
       if (existingPostIds.has(postId)) continue;
-      const emails = JSON.parse(String(post.emails_json || "[]")) as string[];
+      const emails = JSON.parse(String(post.emailsJson || "[]")) as string[];
       const email = emails.find((value) => String(value || "").trim());
       if (!email) continue;
       pending.push({
         key: String(postId),
         postId,
-        postedBy: String(post.posted_by || ""),
-        content: String(post.posted_content || ""),
+        postedBy: String(post.postedBy || ""),
+        content: String(post.postedContent || ""),
         email: String(email).trim()
       });
     }
@@ -161,52 +156,40 @@ export async function POST() {
     if (!pending.length) return NextResponse.json({ created: 0 });
 
     const batches = chunk(pending, BATCH_SIZE);
-    const insert = db.prepare(`INSERT INTO email_drafts
-      (user_id, post_id, recipient_email, recipient_name, subject, body, phone, location, company, contact_name,
-       hiring_summary, talking_points, job_post, matched_skills, called, called_at, replied, replied_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', 0, '', ?, ?)`);
-
     let created = 0;
     let skipped = 0;
     const skipReasons: Array<{ postId: number; reason: string }> = [];
 
     await mapPool(batches, BATCH_CONCURRENCY, async (batch) => {
       const generated = await draftEmailBatch(profile, batch);
-      const timestamp = now();
-      const write = db.transaction(() => {
-        for (const item of batch) {
-          const draft = generated[item.key];
-          if (!draft || draft.skip) {
-            skipped += 1;
-            skipReasons.push({ postId: item.postId, reason: draft && "reason" in draft ? draft.reason : "Skipped." });
-            continue;
-          }
-          if (!draft.subject || !draft.body) {
-            skipped += 1;
-            continue;
-          }
-          insert.run(
-            user.id,
-            item.postId,
-            item.email,
-            draft.contact_name || item.postedBy,
-            draft.subject,
-            draft.body,
-            draft.phone,
-            draft.location,
-            draft.company,
-            draft.contact_name || item.postedBy,
-            draft.hiring_summary,
-            draft.talking_points,
-            item.content,
-            draft.matched_skills.join(", "),
-            timestamp,
-            timestamp
-          );
-          created += 1;
+      for (const item of batch) {
+        const draft = generated[item.key];
+        if (!draft || draft.skip) {
+          skipped += 1;
+          skipReasons.push({ postId: item.postId, reason: draft && "reason" in draft ? draft.reason : "Skipped." });
+          continue;
         }
-      });
-      write();
+        if (!draft.subject || !draft.body) {
+          skipped += 1;
+          continue;
+        }
+        await insertDraft(user.id, {
+          postId: item.postId,
+          recipientEmail: item.email,
+          recipientName: draft.contact_name || item.postedBy,
+          subject: draft.subject,
+          body: draft.body,
+          phone: draft.phone,
+          location: draft.location,
+          company: draft.company,
+          contactName: draft.contact_name || item.postedBy,
+          hiringSummary: draft.hiring_summary,
+          talkingPoints: draft.talking_points,
+          jobPost: item.content,
+          matchedSkills: draft.matched_skills.join(", ")
+        });
+        created += 1;
+      }
     });
 
     return NextResponse.json({
