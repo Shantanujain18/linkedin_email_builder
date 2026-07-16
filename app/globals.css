@@ -57,13 +57,35 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid #293241; padding: 10px 7px; text-align: left; vertical-align: middle; }
 th { color: #b8c2cf; }
 .table-wrap { overflow-x: auto; margin-top: 16px; border: 1px solid #293241; border-radius: 12px; }
-.draft-table { margin: 0; min-width: 980px; }
+.draft-table { margin: 0; min-width: 1080px; }
 .draft-table th { position: sticky; top: 0; background: #151b24; }
 .draft-table td.ellipsis { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .draft-table .actions-cell { white-space: nowrap; }
 .draft-table tr.row-called { background: rgba(47, 111, 78, 0.12); }
+.draft-table tr.row-replied { background: rgba(88, 166, 255, 0.12); }
 .draft-card { border: 1px solid #293241; border-radius: 14px; background: #111821; padding: 16px; }
 .draft-card.called { border-color: #2f6f4e; }
+.draft-card.replied { border-color: #388bfd; }
+.badge.replied { background: #123a66; color: #79c0ff; }
+.notes-section .hint { margin: 0 0 10px; }
+.note-form { display: grid; gap: 8px; margin-bottom: 14px; }
+.note-form button { margin-top: 0; justify-self: start; }
+.notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.notes-list li {
+  border: 1px solid #293241;
+  border-radius: 10px;
+  background: #0d1117;
+  padding: 10px 12px;
+}
+.notes-list .note-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.notes-list time { color: #8b949e; font-size: 12px; font-weight: 650; }
+.notes-list p { margin: 0; color: #e6edf3; white-space: pre-wrap; }
 .draft-card-head { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; margin-bottom: 12px; }
 .draft-card-head h3 { margin: 0; font-size: 18px; }
 .meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 14px; }

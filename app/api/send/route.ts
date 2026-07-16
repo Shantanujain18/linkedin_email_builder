@@ -8,6 +8,7 @@ import {
   normalizeEmail,
   now,
   recordEmailSent,
+  repliedEmailSet,
   todayKey,
   wasEmailedToday
 } from "@/lib/db";
@@ -21,6 +22,7 @@ type DraftRow = {
   subject: string;
   body: string;
   status: string;
+  replied?: number;
 };
 
 export async function POST(request: Request) {
@@ -46,22 +48,24 @@ export async function POST(request: Request) {
     let drafts: DraftRow[];
     if (sendAll) {
       drafts = db
-        .prepare("SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE status != 'sent' ORDER BY id ASC")
+        .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
+          WHERE status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
         .all() as DraftRow[];
     } else if (draftIds.length) {
       const placeholders = draftIds.map(() => "?").join(",");
       drafts = db
-        .prepare(`SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE id IN (${placeholders}) AND status != 'sent' ORDER BY id ASC`)
+        .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
+          WHERE id IN (${placeholders}) AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
         .all(...draftIds) as DraftRow[];
     } else {
       const draft = db
-        .prepare("SELECT id, recipient_email, subject, body, status FROM email_drafts WHERE id = ?")
+        .prepare("SELECT id, recipient_email, subject, body, status, replied FROM email_drafts WHERE id = ?")
         .get(draftId) as DraftRow | undefined;
       drafts = draft ? [draft] : [];
     }
 
     if (!drafts.length) {
-      return NextResponse.json({ error: sendAll ? "No unsent drafts to send." : "Draft not found." }, { status: 404 });
+      return NextResponse.json({ error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." }, { status: 404 });
     }
 
     const profile = getProfile();
@@ -82,6 +86,7 @@ export async function POST(request: Request) {
 
     const day = todayKey();
     const alreadyToday = emailedTodaySet(day);
+    const repliedEmails = repliedEmailSet();
     const sentThisRun = new Set<string>();
 
     let sent = 0;
@@ -94,6 +99,16 @@ export async function POST(request: Request) {
       if (!email) {
         skipped += 1;
         skippedDrafts.push({ id: draft.id, email: draft.recipient_email, reason: "Missing recipient email." });
+        continue;
+      }
+
+      if (Number(draft.replied) === 1 || repliedEmails.has(email)) {
+        skipped += 1;
+        skippedDrafts.push({
+          id: draft.id,
+          email,
+          reason: "Recipient marked as replied — automation blocked."
+        });
         continue;
       }
 

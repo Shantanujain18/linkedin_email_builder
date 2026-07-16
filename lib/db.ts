@@ -19,6 +19,7 @@ if (process.env.NODE_ENV !== "production") globalForDb.emailSenderDb = db;
 
 db.pragma("busy_timeout = 5000");
 db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
 db.exec(`
   CREATE TABLE IF NOT EXISTS candidate_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -67,6 +68,13 @@ db.exec(`
     sent_at TEXT NOT NULL,
     UNIQUE(recipient_email, sent_on)
   );
+  CREATE TABLE IF NOT EXISTS draft_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(draft_id) REFERENCES email_drafts(id) ON DELETE CASCADE
+  );
 `);
 
 function ensureColumn(table: string, column: string, definition: string) {
@@ -90,6 +98,78 @@ ensureColumn("email_drafts", "job_post", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("email_drafts", "matched_skills", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("email_drafts", "called", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("email_drafts", "called_at", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("email_drafts", "replied", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("email_drafts", "replied_at", "TEXT NOT NULL DEFAULT ''");
+
+export type DraftNote = {
+  id: number;
+  draft_id: number;
+  note: string;
+  created_at: string;
+};
+
+export function getNotesForDraft(draftId: number): DraftNote[] {
+  return db
+    .prepare("SELECT id, draft_id, note, created_at FROM draft_notes WHERE draft_id = ? ORDER BY id DESC")
+    .all(draftId) as DraftNote[];
+}
+
+export function getNotesByDraftIds(draftIds: number[]): Record<number, DraftNote[]> {
+  const map: Record<number, DraftNote[]> = {};
+  for (const id of draftIds) map[id] = [];
+  if (!draftIds.length) return map;
+  const placeholders = draftIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT id, draft_id, note, created_at FROM draft_notes WHERE draft_id IN (${placeholders}) ORDER BY id DESC`)
+    .all(...draftIds) as DraftNote[];
+  for (const row of rows) {
+    if (!map[row.draft_id]) map[row.draft_id] = [];
+    map[row.draft_id].push(row);
+  }
+  return map;
+}
+
+export function addDraftNote(draftId: number, note: string) {
+  const text = String(note || "").trim();
+  if (!text) throw new Error("Note cannot be empty.");
+  const createdAt = now();
+  const result = db.prepare("INSERT INTO draft_notes (draft_id, note, created_at) VALUES (?, ?, ?)").run(draftId, text, createdAt);
+  return db.prepare("SELECT id, draft_id, note, created_at FROM draft_notes WHERE id = ?").get(result.lastInsertRowid) as DraftNote;
+}
+
+export function deleteDraftNote(noteId: number) {
+  return db.prepare("DELETE FROM draft_notes WHERE id = ?").run(noteId).changes;
+}
+
+export function repliedEmailSet() {
+  const rows = db
+    .prepare("SELECT DISTINCT lower(trim(recipient_email)) AS email FROM email_drafts WHERE replied = 1")
+    .all() as Array<{ email: string }>;
+  return new Set(rows.map((row) => normalizeEmail(row.email)).filter(Boolean));
+}
+
+export function setDraftReplied(draftId: number, replied: boolean) {
+  const draft = db.prepare("SELECT id, recipient_email FROM email_drafts WHERE id = ?").get(draftId) as
+    | { id: number; recipient_email: string }
+    | undefined;
+  if (!draft) return null;
+  const timestamp = now();
+  const email = normalizeEmail(draft.recipient_email);
+  // Mark all drafts for this email so automation never emails them again.
+  if (email) {
+    db.prepare(`UPDATE email_drafts
+      SET replied = ?, replied_at = CASE WHEN ? = 1 THEN ? ELSE '' END, updated_at = ?
+      WHERE lower(trim(recipient_email)) = ?`).run(replied ? 1 : 0, replied ? 1 : 0, timestamp, timestamp, email);
+  } else {
+    db.prepare(`UPDATE email_drafts
+      SET replied = ?, replied_at = ?, updated_at = ?
+      WHERE id = ?`).run(replied ? 1 : 0, replied ? timestamp : "", timestamp, draftId);
+  }
+  return db.prepare(`SELECT id, recipient_email, recipient_name, subject, body, status,
+    phone, location, company, contact_name, hiring_summary, talking_points, job_post, matched_skills,
+    called, called_at, replied, replied_at
+    FROM email_drafts WHERE id = ?`).get(draftId) as Record<string, unknown>;
+}
 
 export type SmtpSettings = {
   host: string;
@@ -191,7 +271,10 @@ export function getPosts() {
 }
 
 export function clearDrafts() {
-  const result = db.prepare("DELETE FROM email_drafts").run();
+  const result = db.transaction(() => {
+    db.prepare("DELETE FROM draft_notes").run();
+    return db.prepare("DELETE FROM email_drafts").run();
+  })();
   return result.changes;
 }
 
@@ -199,7 +282,10 @@ export function deleteDraftsByIds(ids: number[]) {
   const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
   if (!unique.length) return 0;
   const placeholders = unique.map(() => "?").join(",");
-  const result = db.prepare(`DELETE FROM email_drafts WHERE id IN (${placeholders})`).run(...unique);
+  const result = db.transaction(() => {
+    db.prepare(`DELETE FROM draft_notes WHERE draft_id IN (${placeholders})`).run(...unique);
+    return db.prepare(`DELETE FROM email_drafts WHERE id IN (${placeholders})`).run(...unique);
+  })();
   return result.changes;
 }
 

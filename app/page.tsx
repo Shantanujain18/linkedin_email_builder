@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from "react";
 
+type DraftNote = {
+  id: number;
+  draft_id: number;
+  note: string;
+  created_at: string;
+};
+
 type Draft = {
   id: number;
   recipient_email: string;
@@ -19,6 +26,9 @@ type Draft = {
   matched_skills?: string;
   called?: boolean;
   called_at?: string;
+  replied?: boolean;
+  replied_at?: string;
+  notes?: DraftNote[];
 };
 
 type Smtp = {
@@ -81,6 +91,7 @@ export default function Home() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ recipient_email: "", subject: "", body: "" });
+  const [noteText, setNoteText] = useState("");
 
   async function refresh() {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -289,11 +300,13 @@ export default function Home() {
 
   function openDetails(draft: Draft) {
     setDetailId(draft.id);
+    setNoteText("");
     cancelEdit();
   }
 
   function closeDetails() {
     setDetailId(null);
+    setNoteText("");
     cancelEdit();
   }
 
@@ -328,6 +341,55 @@ export default function Home() {
     if (response.ok) refresh();
   }
 
+  async function toggleReplied(draft: Draft, replied: boolean) {
+    setBusy(true); setStatus(replied ? "Marking as replied…" : "Clearing replied mark…");
+    const response = await fetch("/api/drafts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: draft.id, replied })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(
+      data.error ||
+        (replied
+          ? "Marked as replied. Automation will not email this address again."
+          : "Replied mark cleared.")
+    );
+    if (response.ok) refresh();
+  }
+
+  async function addNote(event: React.FormEvent) {
+    event.preventDefault();
+    if (detailId == null || !noteText.trim()) return;
+    setBusy(true); setStatus("Saving note…");
+    const response = await fetch("/api/drafts/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: detailId, note: noteText })
+    });
+    const data = await response.json(); setBusy(false);
+    if (!response.ok) {
+      setStatus(data.error || "Failed to save note.");
+      return;
+    }
+    setNoteText("");
+    setStatus("Note added.");
+    refresh();
+  }
+
+  async function removeNote(noteId: number) {
+    if (!window.confirm("Delete this note?")) return;
+    setBusy(true); setStatus("Deleting note…");
+    const response = await fetch("/api/drafts/notes", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: noteId })
+    });
+    const data = await response.json(); setBusy(false);
+    setStatus(data.error || "Note deleted.");
+    if (response.ok) refresh();
+  }
+
   function toggleSelected(id: number, checked: boolean) {
     setSelectedIds((prev) => checked ? Array.from(new Set([...prev, id])) : prev.filter((value) => value !== id));
   }
@@ -338,7 +400,7 @@ export default function Home() {
 
   function selectAllUnsent(checked: boolean) {
     const unsentIds = stats.drafts
-      .filter((draft) => draft.status !== "sent" && draft.status !== "skipped")
+      .filter((draft) => draft.status !== "sent" && draft.status !== "skipped" && !draft.replied)
       .map((draft) => draft.id);
     setSelectedIds((prev) => {
       if (checked) return Array.from(new Set([...prev, ...unsentIds]));
@@ -385,10 +447,10 @@ export default function Home() {
     refresh();
   }
 
-  const unsentCount = stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped").length;
+  const unsentCount = stats.drafts.filter((draft) => draft.status !== "sent" && draft.status !== "skipped" && !draft.replied).length;
   const selectedUnsentIds = selectedIds.filter((id) => {
     const draft = stats.drafts.find((item) => item.id === id);
-    return draft && draft.status !== "sent" && draft.status !== "skipped";
+    return draft && draft.status !== "sent" && draft.status !== "skipped" && !draft.replied;
   });
   const selectedUnsent = selectedUnsentIds.length;
   const allSelected = stats.drafts.length > 0 && selectedIds.length === stats.drafts.length;
@@ -622,12 +684,13 @@ export default function Home() {
                 <th>Subject</th>
                 <th>Status</th>
                 <th>Called</th>
+                <th>Replied</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {stats.drafts.map((draft) => (
-                <tr key={draft.id} className={draft.called ? "row-called" : undefined}>
+                <tr key={draft.id} className={draft.replied ? "row-replied" : draft.called ? "row-called" : undefined}>
                   <td>
                     <input
                       type="checkbox"
@@ -652,6 +715,15 @@ export default function Home() {
                       aria-label={`Mark called for ${draft.recipient_email}`}
                     />
                   </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.replied)}
+                      disabled={busy}
+                      onChange={(e) => toggleReplied(draft, e.target.checked)}
+                      aria-label={`Mark replied for ${draft.recipient_email}`}
+                    />
+                  </td>
                   <td className="actions-cell">
                     <button className="secondary compact" type="button" disabled={busy} onClick={() => openDetails(draft)}>
                       View details
@@ -666,7 +738,7 @@ export default function Home() {
         {detailDraft && (
           <div className="modal-backdrop" role="presentation" onClick={closeDetails}>
             <div
-              className={`modal-card draft-card ${detailDraft.called ? "called" : ""}`}
+              className={`modal-card draft-card ${detailDraft.replied ? "replied" : detailDraft.called ? "called" : ""}`}
               role="dialog"
               aria-modal="true"
               aria-label="Draft details"
@@ -675,6 +747,7 @@ export default function Home() {
               <header className="draft-card-head">
                 <h3>Draft details</h3>
                 <span className={`badge ${detailDraft.status}`}>{detailDraft.status === "skipped" ? "skipped today" : detailDraft.status}</span>
+                {detailDraft.replied && <span className="badge replied">replied</span>}
                 <label className="checkbox tight">
                   <input
                     type="checkbox"
@@ -683,6 +756,15 @@ export default function Home() {
                     onChange={(e) => toggleCalled(detailDraft, e.target.checked)}
                   />
                   Called
+                </label>
+                <label className="checkbox tight">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(detailDraft.replied)}
+                    disabled={busy}
+                    onChange={(e) => toggleReplied(detailDraft, e.target.checked)}
+                  />
+                  Got reply
                 </label>
                 <button className="secondary compact" type="button" onClick={closeDetails}>Close</button>
               </header>
@@ -763,6 +845,43 @@ export default function Home() {
                     <pre>{detailDraft.job_post || "Original post not stored for this draft. Enrich or regenerate to capture it."}</pre>
                   </details>
 
+                  <div className="draft-block notes-section">
+                    <h3>Conversation notes</h3>
+                    <p className="hint">Track what you discussed. Each note is saved with a timestamp.</p>
+                    <form className="note-form" onSubmit={addNote}>
+                      <textarea
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        placeholder="e.g. Discussed React role, asked for portfolio, follow up next week…"
+                        rows={3}
+                        disabled={busy}
+                      />
+                      <button type="submit" disabled={busy || !noteText.trim()}>Add note</button>
+                    </form>
+                    {(detailDraft.notes || []).length === 0 ? (
+                      <p>No notes yet.</p>
+                    ) : (
+                      <ul className="notes-list">
+                        {(detailDraft.notes || []).map((note) => (
+                          <li key={note.id}>
+                            <div className="note-meta">
+                              <time dateTime={note.created_at}>{new Date(note.created_at).toLocaleString()}</time>
+                              <button
+                                type="button"
+                                className="secondary compact danger"
+                                disabled={busy}
+                                onClick={() => removeNote(note.id)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                            <p>{note.note}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
                   <div className="row-actions">
                     <button className="secondary compact" type="button" disabled={busy} onClick={() => startEdit(detailDraft)}>
                       Edit email
@@ -770,7 +889,7 @@ export default function Home() {
                     <button
                       className="secondary compact"
                       type="button"
-                      disabled={busy || !stats.smtp.configured || detailDraft.status === "sent" || detailDraft.status === "skipped" || (bulkAttachResume && !hasResumeFile)}
+                      disabled={busy || !stats.smtp.configured || detailDraft.status === "sent" || detailDraft.status === "skipped" || Boolean(detailDraft.replied) || (bulkAttachResume && !hasResumeFile)}
                       onClick={() => sendDrafts({ draftId: detailDraft.id })}
                     >
                       Send
