@@ -36,6 +36,7 @@ export default function SignupPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
+        <p className="eyebrow" style={{ marginBottom: 10 }}>Email Drafter</p>
         <h1>Create account</h1>
         <p className="subtitle">Each account keeps its own resume, posts, drafts, and SMTP settings.</p>
         <form onSubmit={onSubmit}>
@@ -70,7 +71,7 @@ export default function SignupPage() {
           <p className="hint">At least 8 characters.</p>
           <button disabled={busy} type="submit">{busy ? "Creating…" : "Sign up"}</button>
         </form>
-        {error ? <p className="status error">{error}</p> : null}
+        {error ? <p className="hint error">{error}</p> : null}
         <p className="auth-switch">
           Already have an account? <Link href="/login">Sign in</Link>
         </p>

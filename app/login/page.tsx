@@ -35,8 +35,9 @@ export default function LoginPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
+        <p className="eyebrow" style={{ marginBottom: 10 }}>Email Drafter</p>
         <h1>Sign in</h1>
-        <p className="subtitle">Access your LinkedIn Email Drafter workspace.</p>
+        <p className="subtitle">Access your LinkedIn outreach workspace.</p>
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Email</label>
           <input
@@ -58,7 +59,7 @@ export default function LoginPage() {
           />
           <button disabled={busy} type="submit">{busy ? "Signing in…" : "Sign in"}</button>
         </form>
-        {error ? <p className="status error">{error}</p> : null}
+        {error ? <p className="hint error">{error}</p> : null}
         <p className="auth-switch">
           No account? <Link href="/signup">Create one</Link>
         </p>
