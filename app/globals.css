@@ -1496,6 +1496,24 @@ code {
   margin-top: 18px;
 }
 
+.auth-forgot {
+  margin: 8px 0 0;
+  text-align: right;
+  font-size: 12px;
+}
+
+.auth-forgot a {
+  color: var(--muted);
+}
+
+.auth-forgot a:hover {
+  color: var(--primary);
+}
+
+.hint.success {
+  color: #7dcea0;
+}
+
 .auth-switch {
   margin-top: 16px;
   font-size: 12px;

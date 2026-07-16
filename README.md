@@ -13,9 +13,13 @@ Next.js app that turns a resume + LinkedIn post CSV into reviewable outreach dra
 
 1. Create a project at [supabase.com](https://supabase.com).
 2. **Authentication → Providers → Email:** enable Email. For local testing you can disable “Confirm email”.
-3. **SQL Editor:** run [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) (tables, RLS, `resumes` bucket policies).
-4. **Project Settings → API:** copy Project URL, publishable/anon key, and **service_role** key.
-5. **Project Settings → Database:** copy the **connection string** (URI). Prefer the **Transaction pooler** (`:6543`) for serverless/Vercel.
+3. **Authentication → URL Configuration:** set Site URL to your app origin, and add Redirect URLs for:
+   - `http://localhost:3002/**` (local)
+   - `https://your-production-domain/**`
+   - specifically include `/auth/callback` (used by password reset)
+4. **SQL Editor:** run [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) (tables, RLS, `resumes` bucket policies).
+5. **Project Settings → API:** copy Project URL, publishable/anon key, and **service_role** key.
+6. **Project Settings → Database:** copy the **connection string** (URI). Prefer the **Transaction pooler** (`:6543`) for serverless/Vercel.
 
 ## Local run
 

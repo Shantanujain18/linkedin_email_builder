@@ -33,10 +33,14 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isAuthPage = path === "/login" || path === "/signup";
+  const isAuthPage =
+    path === "/login" || path === "/signup" || path === "/forgot-password";
+  const isResetPassword = path === "/reset-password";
+  const isAuthCallback = path.startsWith("/auth/callback");
   const isPublicApi = path.startsWith("/api/auth");
+  const isPublicPath = isAuthPage || isResetPassword || isAuthCallback || isPublicApi;
 
-  if (!user && !isAuthPage && !isPublicApi && (path === "/" || path.startsWith("/api/"))) {
+  if (!user && !isPublicPath && (path === "/" || path.startsWith("/api/"))) {
     if (path.startsWith("/api/")) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
     }
@@ -45,6 +49,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+  // Allow reset-password while recovery session is active.
   if (user && isAuthPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
