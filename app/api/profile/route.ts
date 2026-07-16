@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
+import { isUser, requireUser } from "@/lib/auth";
 import { getPublicProfile, updateProfile } from "@/lib/db";
 
 export const runtime = "nodejs";
 
 export async function PATCH(request: Request) {
   try {
-    if (!getPublicProfile()) {
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
+    if (!getPublicProfile(user.id)) {
       return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
     }
     const body = await request.json();
@@ -29,7 +33,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Provide immediate_joiner and/or top_skills to update." }, { status: 400 });
     }
 
-    const profile = updateProfile(patch);
+    const profile = updateProfile(user.id, patch);
     return NextResponse.json({ profile });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to update profile." }, { status: 500 });

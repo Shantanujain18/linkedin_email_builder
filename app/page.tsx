@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type DraftNote = {
@@ -71,6 +72,9 @@ function parseSkills(raw: string) {
 }
 
 export default function Home() {
+  const router = useRouter();
+  const [authReady, setAuthReady] = useState(false);
+  const [user, setUser] = useState<{ id: number; email: string; name: string } | null>(null);
   const [stats, setStats] = useState<Stats>({ profile: null, posts: [], drafts: [], smtp: defaultSmtp });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,7 +99,15 @@ export default function Home() {
 
   async function refresh() {
     const response = await fetch("/api/status", { cache: "no-store" });
+    if (response.status === 401) {
+      setUser(null);
+      setAuthReady(true);
+      router.replace("/login");
+      return;
+    }
     const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load workspace.");
+    if (data.user) setUser(data.user);
     const smtp = data.smtp || defaultSmtp;
     setStats({ profile: data.profile || null, posts: data.posts || [], drafts: data.drafts || [], smtp });
     setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
@@ -114,8 +126,20 @@ export default function Home() {
       const existing = new Set((data.drafts || []).map((draft: Draft) => draft.id));
       return prev.filter((id) => existing.has(id));
     });
+    setAuthReady(true);
   }
-  useEffect(() => { refresh().catch(() => {}); }, []);
+  useEffect(() => { refresh().catch(() => { setAuthReady(true); router.replace("/login"); }); }, []);
+
+  async function signOut() {
+    setBusy(true);
+    try {
+      await fetch("/api/auth", { method: "DELETE" });
+      router.replace("/login");
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (detailId == null) return;
@@ -465,9 +489,21 @@ export default function Home() {
     if (node) node.indeterminate = someSelected;
   }, [someSelected, allSelected]);
 
+  if (!authReady || !user) {
+    return <main className="auth-loading"><p>Loading workspace…</p></main>;
+  }
+
   return <main>
-    <h1>LinkedIn Email Drafter</h1>
-    <p className="subtitle">Upload a resume, import the LinkedIn post CSV, generate outreach drafts, then bulk-send them with Gmail App Password SMTP and an optional resume attachment.</p>
+    <div className="topbar">
+      <div>
+        <h1>LinkedIn Email Drafter</h1>
+        <p className="subtitle">Upload a resume, import the LinkedIn post CSV, generate outreach drafts, then bulk-send them with Gmail App Password SMTP and an optional resume attachment.</p>
+      </div>
+      <div className="topbar-user">
+        <span>Signed in as <strong>{user.name || user.email}</strong></span>
+        <button type="button" className="secondary compact" disabled={busy} onClick={signOut}>Sign out</button>
+      </div>
+    </div>
     <div className="grid">
       <section className="card">
         <h2>1. Candidate resume</h2>
