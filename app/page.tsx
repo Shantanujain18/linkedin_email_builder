@@ -165,7 +165,7 @@ function PageHeader({
   actions
 }: {
   title: string;
-  subtitle: string;
+  subtitle: ReactNode;
   actions?: ReactNode;
 }) {
   return (
@@ -912,7 +912,18 @@ export default function Home() {
             <section className="page-view">
               <PageHeader
                 title="SMTP Details"
-                subtitle="Use Gmail with an App Password. Defaults to smtp.gmail.com:587."
+                subtitle={
+                  <>
+                    Use Gmail with an App Password. Defaults to smtp.gmail.com:587.{" "}
+                    <a
+                      href="https://support.google.com/mail/answer/185833?hl=en"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      How to create an App Password
+                    </a>
+                  </>
+                }
                 actions={
                   <span className={`status-badge${stats.smtp.configured ? " ready" : ""}`}>
                     <span className="dot" />
