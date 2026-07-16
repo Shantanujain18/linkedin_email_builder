@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs";
+import { isUser, requireUser } from "@/lib/auth";
 import {
   db,
   emailedTodaySet,
@@ -27,8 +28,11 @@ type DraftRow = {
 
 export async function POST(request: Request) {
   try {
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
     const body = await request.json().catch(() => ({}));
-    const smtp = getSmtpSettings();
+    const smtp = getSmtpSettings(user.id);
     if (!smtp?.user || !smtp.pass) {
       return NextResponse.json({ error: "Configure SMTP details (email + App Password) first." }, { status: 400 });
     }
@@ -49,18 +53,18 @@ export async function POST(request: Request) {
     if (sendAll) {
       drafts = db
         .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
-          WHERE status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
-        .all() as DraftRow[];
+          WHERE user_id = ? AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
+        .all(user.id) as DraftRow[];
     } else if (draftIds.length) {
       const placeholders = draftIds.map(() => "?").join(",");
       drafts = db
         .prepare(`SELECT id, recipient_email, subject, body, status, replied FROM email_drafts
-          WHERE id IN (${placeholders}) AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
-        .all(...draftIds) as DraftRow[];
+          WHERE user_id = ? AND id IN (${placeholders}) AND status != 'sent' AND coalesce(replied, 0) = 0 ORDER BY id ASC`)
+        .all(user.id, ...draftIds) as DraftRow[];
     } else {
       const draft = db
-        .prepare("SELECT id, recipient_email, subject, body, status, replied FROM email_drafts WHERE id = ?")
-        .get(draftId) as DraftRow | undefined;
+        .prepare("SELECT id, recipient_email, subject, body, status, replied FROM email_drafts WHERE id = ? AND user_id = ?")
+        .get(draftId, user.id) as DraftRow | undefined;
       drafts = draft ? [draft] : [];
     }
 
@@ -68,7 +72,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." }, { status: 404 });
     }
 
-    const profile = getProfile();
+    const profile = getProfile(user.id);
     const attachment =
       attachResume && profile?.resume_path && fs.existsSync(String(profile.resume_path))
         ? {
@@ -85,8 +89,8 @@ export async function POST(request: Request) {
     }
 
     const day = todayKey();
-    const alreadyToday = emailedTodaySet(day);
-    const repliedEmails = repliedEmailSet();
+    const alreadyToday = emailedTodaySet(user.id, day);
+    const repliedEmails = repliedEmailSet(user.id);
     const sentThisRun = new Set<string>();
 
     let sent = 0;
@@ -112,16 +116,17 @@ export async function POST(request: Request) {
         continue;
       }
 
-      if (alreadyToday.has(email) || sentThisRun.has(email) || wasEmailedToday(email, day)) {
+      if (alreadyToday.has(email) || sentThisRun.has(email) || wasEmailedToday(user.id, email, day)) {
         skipped += 1;
         skippedDrafts.push({
           id: draft.id,
           email,
           reason: "Already emailed this address today."
         });
-        db.prepare("UPDATE email_drafts SET status = 'skipped', updated_at = ? WHERE id = ? AND status != 'sent'").run(
+        db.prepare("UPDATE email_drafts SET status = 'skipped', updated_at = ? WHERE id = ? AND user_id = ? AND status != 'sent'").run(
           now(),
-          draft.id
+          draft.id,
+          user.id
         );
         continue;
       }
@@ -135,14 +140,14 @@ export async function POST(request: Request) {
           attachment
         });
         const timestamp = now();
-        db.prepare("UPDATE email_drafts SET status = 'sent', updated_at = ? WHERE id = ?").run(timestamp, draft.id);
-        recordEmailSent(email, draft.id, day);
+        db.prepare("UPDATE email_drafts SET status = 'sent', updated_at = ? WHERE id = ? AND user_id = ?").run(timestamp, draft.id, user.id);
+        recordEmailSent(user.id, email, draft.id, day);
         alreadyToday.add(email);
         sentThisRun.add(email);
         sent += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Send failed.";
-        db.prepare("UPDATE email_drafts SET status = 'failed', updated_at = ? WHERE id = ?").run(now(), draft.id);
+        db.prepare("UPDATE email_drafts SET status = 'failed', updated_at = ? WHERE id = ? AND user_id = ?").run(now(), draft.id, user.id);
         errors.push({ id: draft.id, error: message });
       }
     }

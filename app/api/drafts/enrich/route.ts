@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isUser, requireUser } from "@/lib/auth";
 import { db, getProfile, now } from "@/lib/db";
 import { enrichDraftBatch } from "@/lib/openai";
 import { mapPool } from "@/lib/pool";
@@ -26,14 +27,13 @@ type DraftRow = {
   hiring_summary: string;
 };
 
-/**
- * Backfill phone/location/company/summary/talking points for existing drafts
- * (including already-sent ones) from the linked LinkedIn post text.
- */
 export async function POST(request: Request) {
   try {
-    const profileRow = getProfile();
-    if (!profileRow) return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
+    const profileRow = getProfile(user.id);
+    if (!profileRow?.resume_text) return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
 
     const profile: CandidateProfile = {
       name: String(profileRow.name || ""),
@@ -57,24 +57,25 @@ export async function POST(request: Request) {
       const placeholders = ids.map(() => "?").join(",");
       drafts = db
         .prepare(`SELECT id, post_id, recipient_email, recipient_name, job_post, phone, company, hiring_summary
-          FROM email_drafts WHERE id IN (${placeholders}) ORDER BY id ASC`)
-        .all(...ids) as DraftRow[];
+          FROM email_drafts WHERE user_id = ? AND id IN (${placeholders}) ORDER BY id ASC`)
+        .all(user.id, ...ids) as DraftRow[];
     } else if (onlyMissing) {
       drafts = db
         .prepare(`SELECT id, post_id, recipient_email, recipient_name, job_post, phone, company, hiring_summary
           FROM email_drafts
-          WHERE trim(coalesce(phone,'')) = ''
+          WHERE user_id = ?
+            AND (trim(coalesce(phone,'')) = ''
              OR trim(coalesce(company,'')) = ''
              OR trim(coalesce(hiring_summary,'')) = ''
              OR trim(coalesce(talking_points,'')) = ''
-             OR trim(coalesce(job_post,'')) = ''
+             OR trim(coalesce(job_post,'')) = '')
           ORDER BY id ASC`)
-        .all() as DraftRow[];
+        .all(user.id) as DraftRow[];
     } else {
       drafts = db
         .prepare(`SELECT id, post_id, recipient_email, recipient_name, job_post, phone, company, hiring_summary
-          FROM email_drafts ORDER BY id ASC`)
-        .all() as DraftRow[];
+          FROM email_drafts WHERE user_id = ? ORDER BY id ASC`)
+        .all(user.id) as DraftRow[];
     }
 
     if (!drafts.length) {
@@ -84,8 +85,8 @@ export async function POST(request: Request) {
     const postIds = Array.from(new Set(drafts.map((draft) => draft.post_id)));
     const placeholders = postIds.map(() => "?").join(",");
     const posts = db
-      .prepare(`SELECT id, posted_by, posted_content FROM linkedin_posts WHERE id IN (${placeholders})`)
-      .all(...postIds) as Array<{ id: number; posted_by: string; posted_content: string }>;
+      .prepare(`SELECT id, posted_by, posted_content FROM linkedin_posts WHERE user_id = ? AND id IN (${placeholders})`)
+      .all(user.id, ...postIds) as Array<{ id: number; posted_by: string; posted_content: string }>;
     const postById = new Map(posts.map((post) => [post.id, post]));
 
     type WorkItem = {
@@ -120,7 +121,7 @@ export async function POST(request: Request) {
       phone = ?, location = ?, company = ?, contact_name = ?,
       hiring_summary = ?, talking_points = ?, job_post = ?, matched_skills = ?,
       updated_at = ?
-      WHERE id = ?`);
+      WHERE id = ? AND user_id = ?`);
 
     let enriched = 0;
     const batches = chunk(work, BATCH_SIZE);
@@ -141,7 +142,8 @@ export async function POST(request: Request) {
             item.content,
             row.matched_skills.join(", "),
             timestamp,
-            item.draftId
+            item.draftId,
+            user.id
           );
           enriched += 1;
         }

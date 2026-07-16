@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
+import { isUser, requireUser } from "@/lib/auth";
 import { db, now, resumesDir } from "@/lib/db";
 import { extractResumeText } from "@/lib/resume";
 import { extractCandidateProfile } from "@/lib/openai";
@@ -14,6 +15,9 @@ function safeResumeName(name: string) {
 
 export async function POST(request: Request) {
   try {
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
     const form = await request.formData();
     const file = form.get("resume");
     if (!(file instanceof File) || !file.size) return NextResponse.json({ error: "Choose a resume file." }, { status: 400 });
@@ -32,12 +36,12 @@ export async function POST(request: Request) {
     };
 
     const filename = safeResumeName(file.name);
-    const storedName = `candidate-${Date.now()}-${filename}`;
+    const storedName = `user-${user.id}-${Date.now()}-${filename}`;
     const resumePath = path.join(resumesDir, storedName);
     const buffer = Buffer.from(await file.arrayBuffer());
     fs.writeFileSync(resumePath, buffer);
 
-    const previous = db.prepare("SELECT resume_path, immediate_joiner FROM candidate_profile WHERE id = 1").get() as
+    const previous = db.prepare("SELECT resume_path, immediate_joiner FROM candidate_profile WHERE user_id = ?").get(user.id) as
       | { resume_path?: string; immediate_joiner?: number }
       | undefined;
     if (previous?.resume_path && previous.resume_path !== resumePath && fs.existsSync(previous.resume_path)) {
@@ -47,14 +51,15 @@ export async function POST(request: Request) {
     const immediateJoiner = Number(previous?.immediate_joiner) === 1 ? 1 : 0;
 
     db.prepare(`INSERT INTO candidate_profile
-      (id, name, yoe, top_skills, current_role, resume_link, phone, email, resume_text, resume_filename, resume_mime, resume_path, immediate_joiner, updated_at)
-      VALUES (1, @name, @yoe, @top_skills, @current_role, @resume_link, @phone, @email, @resume_text, @resume_filename, @resume_mime, @resume_path, @immediate_joiner, @updated_at)
-      ON CONFLICT(id) DO UPDATE SET
+      (user_id, name, yoe, top_skills, current_role, resume_link, phone, email, resume_text, resume_filename, resume_mime, resume_path, immediate_joiner, updated_at)
+      VALUES (@user_id, @name, @yoe, @top_skills, @current_role, @resume_link, @phone, @email, @resume_text, @resume_filename, @resume_mime, @resume_path, @immediate_joiner, @updated_at)
+      ON CONFLICT(user_id) DO UPDATE SET
         name=@name, yoe=@yoe, top_skills=@top_skills, current_role=@current_role,
         resume_link=@resume_link, phone=@phone, email=@email, resume_text=@resume_text,
         resume_filename=@resume_filename, resume_mime=@resume_mime, resume_path=@resume_path,
         immediate_joiner=@immediate_joiner, updated_at=@updated_at
     `).run({
+      user_id: user.id,
       ...normalized,
       resume_text: resumeText,
       resume_filename: filename,
