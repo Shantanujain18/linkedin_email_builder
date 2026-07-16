@@ -782,9 +782,50 @@ export default function Home() {
             <section className="page-view">
               <PageHeader
                 title="LinkedIn Posts CSV"
-                subtitle="Import the CSV exported from LinkedIn. Emails are detected automatically."
+                subtitle="Import the CSV exported from the Chrome extension. Emails are detected automatically."
               />
               <div className="card">
+                <div className="extension-guide">
+                  <p className="hint" style={{ marginTop: 0 }}>
+                    Need the scraper?{" "}
+                    <a
+                      href="https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Download Chrome extension (dist.zip)
+                    </a>
+                  </p>
+                  <h3 className="extension-guide-title">Install the extension</h3>
+                  <ol className="extension-steps">
+                    <li>
+                      Download{" "}
+                      <a
+                        href="https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        dist.zip
+                      </a>{" "}
+                      and unzip it (you should get a <code>dist</code> folder).
+                    </li>
+                    <li>
+                      Open Chrome and go to <code>chrome://extensions</code>.
+                    </li>
+                    <li>Turn on <strong>Developer mode</strong> (top right).</li>
+                    <li>
+                      Click <strong>Load unpacked</strong> and select the unzipped{" "}
+                      <code>dist</code> folder.
+                    </li>
+                    <li>
+                      Pin <strong>LinkedIn Post CSV Scraper</strong> from the Extensions menu.
+                    </li>
+                    <li>
+                      Open LinkedIn, click the extension, search/export posts, then import the CSV
+                      below.
+                    </li>
+                  </ol>
+                </div>
                 <form onSubmit={importCsv}>
                   <FileDropzone
                     id="linkedin-csv"
