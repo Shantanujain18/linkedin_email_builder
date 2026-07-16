@@ -1243,6 +1243,36 @@ button.btn-danger .btn-count {
   line-height: 1.6;
 }
 
+.extension-guide {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid #1c1f2e;
+}
+
+.extension-guide-title {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.extension-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #8b9fbf;
+}
+
+.extension-steps li {
+  margin-bottom: 6px;
+}
+
+.extension-steps strong {
+  color: #c5d0e6;
+  font-weight: 600;
+}
+
 code {
   font-family: var(--mono);
   font-size: 11px;
