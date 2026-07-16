@@ -1,49 +1,69 @@
 # LinkedIn Email Drafter
 
-Local Next.js app for turning a resume and exported LinkedIn-post CSV into saved, reviewable outreach drafts.
+Next.js app that turns a resume + LinkedIn post CSV into reviewable outreach drafts, with SMTP send and multi-user auth via **Supabase**.
 
-The workflow is:
+## Stack
 
-1. Upload a PDF, DOCX, or TXT resume. `gpt-4o-mini` extracts the candidate profile.
-2. Upload the LinkedIn scraper CSV. The app stores posts in SQLite and extracts email addresses from every CSV field.
-3. Generate personalized subject/body drafts for posts with detected email addresses.
-4. Review drafts, optionally download CSV, or send emails via SMTP (Gmail App Password) with the uploaded resume attached.
-5. Clear all drafts when you want a fresh generation pass.
+- **Auth:** Supabase Auth (email/password)
+- **Database:** Postgres via `DATABASE_URL` (Supabase-hosted; swap URI later for your own Postgres)
+- **Files:** Supabase Storage bucket `resumes` (swap `lib/storage.ts` later for S3/R2)
+- **AI / mail:** OpenAI + nodemailer (unchanged)
 
-## Run locally
+## One-time Supabase setup
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. **Authentication → Providers → Email:** enable Email. For local testing you can disable “Confirm email”.
+3. **SQL Editor:** run [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) (tables, RLS, `resumes` bucket policies).
+4. **Project Settings → API:** copy Project URL, publishable/anon key, and **service_role** key.
+5. **Project Settings → Database:** copy the **connection string** (URI). Prefer the **Transaction pooler** (`:6543`) for serverless/Vercel.
+
+## Local run
 
 ```bash
-cd /Users/apple/Desktop/Linkedin_Scrapper/email_sender
+cd email_sender
 npm install
 cp .env.example .env.local
 ```
 
-Edit `.env.local` and set `OPENAI_API_KEY`. Then:
+Fill in `.env.local`:
+
+- `OPENAI_API_KEY`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `DATABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
 ```bash
-npm run dev
+npm run dev -- -p 3002
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3002](http://localhost:3002), sign up, then use Resume → CSV → Generate → SMTP → Send.
 
-SQLite is created automatically at `data/email_sender.sqlite` (or the path in `DATABASE_PATH`). Do not commit `.env.local`, `data/`, or `node_modules/`.
+## Portability (leave Supabase later)
 
-## CSV compatibility
+| Concern | How to switch |
+|--------|----------------|
+| Postgres | Change `DATABASE_URL` only (Drizzle/SQL, not `supabase.from`) |
+| Resumes | Replace [`lib/storage.ts`](lib/storage.ts) with S3/R2; migrate objects |
+| Auth | Thin wrapper in [`lib/auth.ts`](lib/auth.ts) — swap provider and map user IDs |
 
-The importer accepts the scraper columns `posted_by`, `posted_by_url`, `posted_date`, `posted_content`, and `post_url`, plus common aliases such as `author`, `content`, and `profile_url`.
+## SMTP
 
-## SMTP sending (Gmail App Password)
+Configure Gmail App Password in the app **SMTP** page. Credentials are stored per user in Postgres.
 
-In the app UI:
+## Migrate old SQLite data
 
-1. Open **SMTP details**.
-2. Host `smtp.gmail.com`, port `587`.
-3. Enter your Gmail address and a [Google App Password](https://myaccount.google.com/apppasswords) (2FA required).
-4. Enable **Attach uploaded resume when sending emails**.
-5. Use **Send** on a draft or **Send all unsent**.
+If you still have `data/email_sender.sqlite`:
 
-SMTP credentials are stored in the local SQLite database (not returned to the browser). Re-upload the resume once so the original file is kept for attachments.
+```bash
+MIGRATE_CLEAR=1 npm run migrate:sqlite
+# or set a known password for a newly created auth user:
+MIGRATE_PASSWORD='YourPassword1!' MIGRATE_CLEAR=1 npm run migrate:sqlite
+```
 
-## OpenAI safety
+This creates/finds the Supabase Auth user for each SQLite email, uploads the local resume to Storage, and copies posts/drafts/send log/profile/SMTP (IDs preserved).
 
-The API key is read only on the server from `OPENAI_API_KEY`; it is never sent to the browser. Generated messages are drafts for human review. Review recipient addresses and claims before using them.
+## Notes
+
+- Do not commit `.env`, `.env.local`, or `SUPABASE_SERVICE_ROLE_KEY`.
+- Old SQLite under `data/` is unused after migration; keep a backup.

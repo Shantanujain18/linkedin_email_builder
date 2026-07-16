@@ -1,17 +1,11 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
-import path from "node:path";
 import { isUser, requireUser } from "@/lib/auth";
-import { db, now, resumesDir } from "@/lib/db";
+import { getProfile, upsertProfileFromResume } from "@/lib/db";
 import { extractResumeText } from "@/lib/resume";
 import { extractCandidateProfile } from "@/lib/openai";
+import { deleteResume, uploadResume } from "@/lib/storage";
 
 export const runtime = "nodejs";
-
-function safeResumeName(name: string) {
-  const base = path.basename(name || "resume").replace(/[^a-zA-Z0-9._-]+/g, "_");
-  return base || "resume.pdf";
-}
 
 export async function POST(request: Request) {
   try {
@@ -35,45 +29,31 @@ export async function POST(request: Request) {
       email: String(profile.email ?? "")
     };
 
-    const filename = safeResumeName(file.name);
-    const storedName = `user-${user.id}-${Date.now()}-${filename}`;
-    const resumePath = path.join(resumesDir, storedName);
+    const previous = await getProfile(user.id);
     const buffer = Buffer.from(await file.arrayBuffer());
-    fs.writeFileSync(resumePath, buffer);
+    const stored = await uploadResume(user.id, file.name, buffer, file.type || "");
 
-    const previous = db.prepare("SELECT resume_path, immediate_joiner FROM candidate_profile WHERE user_id = ?").get(user.id) as
-      | { resume_path?: string; immediate_joiner?: number }
-      | undefined;
-    if (previous?.resume_path && previous.resume_path !== resumePath && fs.existsSync(previous.resume_path)) {
-      try { fs.unlinkSync(previous.resume_path); } catch { /* ignore cleanup errors */ }
+    if (previous?.resume_path && String(previous.resume_path) !== stored.path) {
+      await deleteResume(String(previous.resume_path));
     }
 
-    const immediateJoiner = Number(previous?.immediate_joiner) === 1 ? 1 : 0;
+    const immediateJoiner = Number(previous?.immediate_joiner) === 1;
 
-    db.prepare(`INSERT INTO candidate_profile
-      (user_id, name, yoe, top_skills, current_role, resume_link, phone, email, resume_text, resume_filename, resume_mime, resume_path, immediate_joiner, updated_at)
-      VALUES (@user_id, @name, @yoe, @top_skills, @current_role, @resume_link, @phone, @email, @resume_text, @resume_filename, @resume_mime, @resume_path, @immediate_joiner, @updated_at)
-      ON CONFLICT(user_id) DO UPDATE SET
-        name=@name, yoe=@yoe, top_skills=@top_skills, current_role=@current_role,
-        resume_link=@resume_link, phone=@phone, email=@email, resume_text=@resume_text,
-        resume_filename=@resume_filename, resume_mime=@resume_mime, resume_path=@resume_path,
-        immediate_joiner=@immediate_joiner, updated_at=@updated_at
-    `).run({
-      user_id: user.id,
+    await upsertProfileFromResume(user.id, {
       ...normalized,
       resume_text: resumeText,
-      resume_filename: filename,
-      resume_mime: file.type || "",
-      resume_path: resumePath,
-      immediate_joiner: immediateJoiner,
-      updated_at: now()
+      resume_filename: stored.filename,
+      resume_mime: stored.mime || file.type || "",
+      resume_path: stored.path,
+      immediate_joiner: immediateJoiner
     });
+
     return NextResponse.json({
       profile: {
         ...normalized,
         immediate_joiner: Boolean(immediateJoiner),
         has_resume_file: true,
-        resume_filename: filename
+        resume_filename: stored.filename
       }
     });
   } catch (error) {
