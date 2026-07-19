@@ -40,7 +40,7 @@ function Counter({
   }, [display]);
 
   return (
-    <span ref={ref} className="font-display text-3xl font-extrabold text-text-primary sm:text-4xl">
+    <span ref={ref} className="font-display text-2xl font-extrabold text-text-primary sm:text-4xl">
       {text}
       {suffix}
     </span>
@@ -57,7 +57,7 @@ function MarqueeRow({ reverse = false }: { reverse?: boolean }) {
         }`}
       >
         {items.map((t, i) => (
-          <GlassCard key={`${t.name}-${i}`} className="w-[300px] shrink-0 p-4">
+          <GlassCard key={`${t.name}-${i}`} className="w-[min(300px,82vw)] shrink-0 p-4">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue to-violet text-sm font-bold text-white">
                 {t.name
@@ -87,9 +87,9 @@ function MarqueeRow({ reverse = false }: { reverse?: boolean }) {
 
 export function Numbers() {
   return (
-    <section className="py-20 sm:py-28">
+    <section className="py-16 sm:py-28">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-6 sm:gap-8 lg:grid-cols-4">
           {STATS.map((stat) => (
             <div key={stat.label} className="text-center">
               <Counter
@@ -97,13 +97,15 @@ export function Numbers() {
                 suffix={stat.suffix}
                 decimals={"decimals" in stat ? stat.decimals : 0}
               />
-              <div className="mt-2 text-sm text-text-muted">{stat.label}</div>
+              <div className="mt-2 text-xs text-text-muted sm:text-sm">{stat.label}</div>
             </div>
           ))}
         </div>
-        <div className="mt-14 space-y-4">
+        <div className="mt-10 space-y-4 sm:mt-14">
           <MarqueeRow />
-          <MarqueeRow reverse />
+          <div className="hidden sm:block">
+            <MarqueeRow reverse />
+          </div>
         </div>
       </div>
     </section>

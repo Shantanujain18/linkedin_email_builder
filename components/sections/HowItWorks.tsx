@@ -69,17 +69,17 @@ function StepList({
 
 export function HowItWorks() {
   return (
-    <section id="how-it-works" className="relative py-20 sm:py-28">
+    <section id="how-it-works" className="relative py-16 sm:py-28">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <div className="mx-auto max-w-2xl text-center">
-          <h2 className="font-display text-3xl font-extrabold tracking-tight sm:text-4xl">
+          <h2 className="font-display text-2xl font-extrabold tracking-tight sm:text-4xl">
             <span className="gradient-text">Two Ways to Reach Recruiters</span>
           </h2>
-          <p className="mt-3 text-text-muted">Pick your level of involvement</p>
+          <p className="mt-3 text-sm text-text-muted sm:text-base">Pick your level of involvement</p>
         </div>
 
-        <div className="mt-12 grid gap-6 lg:grid-cols-2">
-          <GlassCard className="p-6" glow="blue">
+        <div className="mt-10 grid gap-5 sm:mt-12 lg:grid-cols-2 lg:gap-6">
+          <GlassCard className="p-5 sm:p-6" glow="blue">
             <Badge tone="blue">DIY Tool</Badge>
             <h3 className="mt-3 font-display text-xl font-bold text-text-primary">You&apos;re in control</h3>
             <p className="mt-2 text-sm text-text-muted">
@@ -90,7 +90,7 @@ export function HowItWorks() {
             </div>
           </GlassCard>
 
-          <GlassCard className="p-6" glow="violet">
+          <GlassCard className="p-5 sm:p-6" glow="violet">
             <Badge tone="violet">Done For You</Badge>
             <h3 className="mt-3 font-display text-xl font-bold text-text-primary">We do the work</h3>
             <p className="mt-2 text-sm text-text-muted">

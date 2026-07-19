@@ -78,23 +78,25 @@ export function Navbar() {
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden border-b border-white/10 bg-background/95 md:hidden"
           >
-            <div className="flex flex-col gap-3 px-4 py-4">
+            <div className="flex flex-col gap-2 px-4 py-4">
               {NAV_LINKS.map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="rounded-lg px-3 py-2 text-sm text-text-muted hover:bg-white/5 hover:text-text-primary"
+                  className="rounded-lg px-3 py-3 text-sm text-text-muted hover:bg-white/5 hover:text-text-primary"
                   onClick={() => setOpen(false)}
                 >
                   {link.label}
                 </Link>
               ))}
-              <Button href="/contact" variant="ghost" className="w-full">
-                Contact
-              </Button>
-              <Button href="/signup" className="w-full">
-                Start free
-              </Button>
+              <div className="mt-2 flex w-full flex-col gap-2">
+                <Button href="/contact" variant="ghost" className="w-full">
+                  Contact
+                </Button>
+                <Button href="/signup" className="w-full">
+                  Start free
+                </Button>
+              </div>
             </div>
           </motion.div>
         ) : null}

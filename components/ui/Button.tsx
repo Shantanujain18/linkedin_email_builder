@@ -57,10 +57,14 @@ export function Button({
   }
 
   const classes = cn(base, variants[variant], className);
+  const fullWidth = Boolean(className?.includes("w-full"));
 
   if (href) {
     return (
-      <motion.div style={{ x: springX, y: springY }} className="inline-flex">
+      <motion.div
+        style={{ x: springX, y: springY }}
+        className={cn("inline-flex", fullWidth && "w-full")}
+      >
         <Link
           href={href}
           className={classes}

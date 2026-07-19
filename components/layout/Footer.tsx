@@ -27,7 +27,7 @@ function SocialIcon({
 export function Footer() {
   return (
     <footer className="border-t border-white/10 bg-surface">
-      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:grid-cols-4">
+      <div className="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:gap-10 sm:px-6 sm:py-14 md:grid-cols-4">
         <div className="md:col-span-2">
           <div className="font-display text-xl font-extrabold gradient-text">
             {SITE.name}
@@ -56,40 +56,44 @@ export function Footer() {
           </div>
         </div>
 
-        <div>
-          <div className="text-sm font-semibold text-text-primary">Product</div>
-          <ul className="mt-3 space-y-2">
-            {FOOTER_LINKS.product.map((link) => (
-              <li key={link.href}>
-                <Link href={link.href} className="text-sm text-text-muted hover:text-text-primary">
-                  {link.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <div className="grid grid-cols-2 gap-8 md:contents">
+          <div>
+            <div className="text-sm font-semibold text-text-primary">Product</div>
+            <ul className="mt-3 space-y-2">
+              {FOOTER_LINKS.product.map((link) => (
+                <li key={link.href}>
+                  <Link href={link.href} className="text-sm text-text-muted hover:text-text-primary">
+                    {link.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
 
-        <div>
-          <div className="text-sm font-semibold text-text-primary">Company</div>
-          <ul className="mt-3 space-y-2">
-            {FOOTER_LINKS.company.map((link) => (
-              <li key={link.href}>
-                <Link href={link.href} className="text-sm text-text-muted hover:text-text-primary">
-                  {link.label}
+          <div>
+            <div className="text-sm font-semibold text-text-primary">Company</div>
+            <ul className="mt-3 space-y-2">
+              {FOOTER_LINKS.company.map((link) => (
+                <li key={link.href}>
+                  <Link href={link.href} className="text-sm text-text-muted hover:text-text-primary">
+                    {link.label}
+                  </Link>
+                </li>
+              ))}
+              <li>
+                <Link href="/login" className="text-sm text-text-muted hover:text-text-primary">
+                  Sign in
                 </Link>
               </li>
-            ))}
-            <li>
-              <Link href="/login" className="text-sm text-text-muted hover:text-text-primary">
-                Sign in
-              </Link>
-            </li>
-          </ul>
+            </ul>
+          </div>
         </div>
       </div>
-      <div className="border-t border-white/10 py-5 text-center text-xs text-text-muted">
-        © {new Date().getFullYear()} ReachPod. All rights reserved. ·{" "}
-        <a href="mailto:shantanujain18@gmail.com" className="hover:text-text-primary">
+      <div className="border-t border-white/10 px-4 py-5 text-center text-xs leading-relaxed text-text-muted">
+        © {new Date().getFullYear()} ReachPod. All rights reserved.
+        <span className="mx-1 hidden sm:inline">·</span>
+        <br className="sm:hidden" />
+        <a href="mailto:shantanujain18@gmail.com" className="break-all hover:text-text-primary">
           shantanujain18@gmail.com
         </a>
       </div>

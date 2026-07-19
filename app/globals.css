@@ -4,6 +4,9 @@
 
 .landing-root {
   color-scheme: dark;
+  overflow-x: clip;
+  width: 100%;
+  max-width: 100vw;
 }
 
 .landing-root a {
@@ -13,6 +16,18 @@
 
 .landing-root a:hover {
   color: inherit;
+}
+
+/* Touch-friendly controls on marketing pages */
+.landing-root button,
+.landing-root [role="switch"] {
+  touch-action: manipulation;
+}
+
+@media (max-width: 639px) {
+  .landing-root .animate-float {
+    animation: none !important;
+  }
 }
 
 *,
@@ -31,6 +46,7 @@ body {
   -webkit-font-smoothing: antialiased;
   background: #0a0a0f;
   color: #f8fafc;
+  overflow-x: clip;
 }
 
 /* Reliable gradient headings for the marketing page */

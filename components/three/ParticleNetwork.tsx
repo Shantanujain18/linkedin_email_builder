@@ -13,6 +13,7 @@ export function ParticleNetwork() {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduce) return;
 
+    const isMobile = window.matchMedia("(max-width: 639px)").matches;
     let frame = 0;
     let disposed = false;
     const width = mount.clientWidth || window.innerWidth;
@@ -22,12 +23,12 @@ export function ParticleNetwork() {
     const camera = new THREE.PerspectiveCamera(60, width / height, 1, 1000);
     camera.position.z = 180;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
     renderer.setSize(width, height);
     mount.appendChild(renderer.domElement);
 
-    const COUNT = 80;
+    const COUNT = isMobile ? 36 : 80;
     const positions = new Float32Array(COUNT * 3);
     const velocities: Array<{ x: number; y: number; z: number }> = [];
     for (let i = 0; i < COUNT; i += 1) {
