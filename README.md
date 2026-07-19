@@ -1,6 +1,20 @@
 # ReachPod
 
-Next.js app that turns a resume + LinkedIn post CSV into reviewable outreach drafts, with SMTP send and multi-user auth via **Supabase**.
+Next.js app that turns a resume + LinkedIn post CSV into reviewable outreach drafts, with SMTP send and multi-user auth via **Supabase**. The companion Chrome extension (`linkedin_post_scrapper`) signs in with the same account and enforces a **daily post scrape quota**.
+
+Each user’s `profiles.daily_post_limit` (default **50**) separately caps:
+
+- Chrome scrape posts / day
+- CSV import rows / day
+- Emails sent / day
+
+Raise the limit per paid user in SQL:
+
+```sql
+update public.profiles
+set daily_post_limit = 500, plan = 'paid'
+where user_id = '<auth-user-uuid>';
+```
 
 ## Stack
 

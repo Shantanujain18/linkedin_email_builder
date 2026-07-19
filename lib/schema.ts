@@ -23,6 +23,12 @@ export const profiles = pgTable("profiles", {
   resumeMime: text("resume_mime").notNull().default(""),
   resumePath: text("resume_path").notNull().default(""),
   immediateJoiner: boolean("immediate_joiner").notNull().default(false),
+  plan: text("plan").notNull().default("free"),
+  dailyPostLimit: integer("daily_post_limit").notNull().default(50),
+  postsFetchedOn: text("posts_fetched_on").notNull().default(""),
+  postsFetchedToday: integer("posts_fetched_today").notNull().default(0),
+  postsImportedOn: text("posts_imported_on").notNull().default(""),
+  postsImportedToday: integer("posts_imported_today").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
@@ -106,4 +112,22 @@ export const draftNotes = pgTable("draft_notes", {
   draftId: integer("draft_id").notNull(),
   note: text("note").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
+});
+
+export const contactSubmissions = pgTable("contact_submissions", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  email: text("email").notNull(),
+  plan: text("plan").notNull().default("general"),
+  message: text("message").notNull().default(""),
+  source: text("source").notNull().default("website"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
+});
+
+export const extensionConfig = pgTable("extension_config", {
+  id: integer("id").primaryKey().default(1),
+  requiredVersion: text("required_version").notNull().default("2.1.0"),
+  updateUrl: text("update_url").notNull().default(""),
+  message: text("message").notNull().default("Please install the latest ReachPod extension to continue."),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()
 });

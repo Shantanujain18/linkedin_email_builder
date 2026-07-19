@@ -53,12 +53,286 @@ export async function ensureUserDefaults(userId: string) {
   const timestamp = now();
   await db
     .insert(profiles)
-    .values({ userId, updatedAt: timestamp })
+    .values({
+      userId,
+      plan: "free",
+      dailyPostLimit: 50,
+      postsFetchedOn: "",
+      postsFetchedToday: 0,
+      postsImportedOn: "",
+      postsImportedToday: 0,
+      updatedAt: timestamp
+    })
     .onConflictDoNothing({ target: profiles.userId });
   await db
     .insert(smtpSettings)
     .values({ userId, updatedAt: timestamp })
     .onConflictDoNothing({ target: smtpSettings.userId });
+}
+
+export type DailyQuota = {
+  plan: string;
+  daily_post_limit: number;
+  used: number;
+  remaining: number;
+  day: string;
+};
+
+export type ScrapeQuota = {
+  plan: string;
+  daily_post_limit: number;
+  posts_fetched_today: number;
+  posts_fetched_on: string;
+  remaining: number;
+};
+
+type ProfileQuotaRow = {
+  plan: string;
+  dailyPostLimit: number;
+  postsFetchedOn: string;
+  postsFetchedToday: number;
+  postsImportedOn: string;
+  postsImportedToday: number;
+};
+
+async function readQuotaRow(userId: string): Promise<ProfileQuotaRow | undefined> {
+  await ensureUserDefaults(userId);
+  const [row] = await getDb()
+    .select({
+      plan: profiles.plan,
+      dailyPostLimit: profiles.dailyPostLimit,
+      postsFetchedOn: profiles.postsFetchedOn,
+      postsFetchedToday: profiles.postsFetchedToday,
+      postsImportedOn: profiles.postsImportedOn,
+      postsImportedToday: profiles.postsImportedToday
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+  return row;
+}
+
+function limitFromRow(row: { plan: string; dailyPostLimit: number } | undefined) {
+  return {
+    plan: row?.plan || "free",
+    limit: Math.max(0, Number(row?.dailyPostLimit) || 0)
+  };
+}
+
+function scrapeQuotaFromRow(row: ProfileQuotaRow, day = todayKey()): ScrapeQuota {
+  const used = row.postsFetchedOn === day ? row.postsFetchedToday : 0;
+  const { plan, limit } = limitFromRow(row);
+  return {
+    plan,
+    daily_post_limit: limit,
+    posts_fetched_today: used,
+    posts_fetched_on: day,
+    remaining: Math.max(0, limit - used)
+  };
+}
+
+function importQuotaFromRow(row: ProfileQuotaRow, day = todayKey()): DailyQuota {
+  const used = row.postsImportedOn === day ? row.postsImportedToday : 0;
+  const { plan, limit } = limitFromRow(row);
+  return {
+    plan,
+    daily_post_limit: limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    day
+  };
+}
+
+export async function getScrapeQuota(userId: string): Promise<ScrapeQuota> {
+  const row = await readQuotaRow(userId);
+  if (!row) {
+    return {
+      plan: "free",
+      daily_post_limit: 50,
+      posts_fetched_today: 0,
+      posts_fetched_on: todayKey(),
+      remaining: 50
+    };
+  }
+  return scrapeQuotaFromRow(row);
+}
+
+export async function getImportQuota(userId: string): Promise<DailyQuota> {
+  const row = await readQuotaRow(userId);
+  if (!row) {
+    return { plan: "free", daily_post_limit: 50, used: 0, remaining: 50, day: todayKey() };
+  }
+  return importQuotaFromRow(row);
+}
+
+export async function getSendQuota(userId: string): Promise<DailyQuota> {
+  const day = todayKey();
+  const row = await readQuotaRow(userId);
+  const { plan, limit } = limitFromRow(row);
+  const [{ count }] = await getDb()
+    .select({ count: sql<number>`count(*)::int` })
+    .from(emailSendLog)
+    .where(and(eq(emailSendLog.userId, userId), eq(emailSendLog.sentOn, day)));
+  const used = Number(count) || 0;
+  return {
+    plan,
+    daily_post_limit: limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    day
+  };
+}
+
+export async function getAllDailyQuotas(userId: string) {
+  const [scrape, csvImport, send] = await Promise.all([
+    getScrapeQuota(userId),
+    getImportQuota(userId),
+    getSendQuota(userId)
+  ]);
+  return {
+    plan: scrape.plan,
+    daily_post_limit: scrape.daily_post_limit,
+    scrape,
+    import: csvImport,
+    send
+  };
+}
+
+/** Atomically reserve up to `requested` posts against today's scrape quota. */
+export async function reserveScrapeQuota(
+  userId: string,
+  requested: number
+): Promise<ScrapeQuota & { allowed: number }> {
+  const want = Math.max(0, Math.floor(Number(requested) || 0));
+  if (!want) {
+    const quota = await getScrapeQuota(userId);
+    return { ...quota, allowed: 0 };
+  }
+
+  const day = todayKey();
+  const db = getDb();
+  await ensureUserDefaults(userId);
+
+  await db
+    .update(profiles)
+    .set({
+      postsFetchedOn: day,
+      postsFetchedToday: 0,
+      updatedAt: now()
+    })
+    .where(and(eq(profiles.userId, userId), ne(profiles.postsFetchedOn, day)));
+
+  const [before] = await db
+    .select({
+      plan: profiles.plan,
+      dailyPostLimit: profiles.dailyPostLimit,
+      postsFetchedOn: profiles.postsFetchedOn,
+      postsFetchedToday: profiles.postsFetchedToday,
+      postsImportedOn: profiles.postsImportedOn,
+      postsImportedToday: profiles.postsImportedToday
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+
+  if (!before) throw new Error("Profile missing for scrape quota.");
+  const current = scrapeQuotaFromRow(before, day);
+  const allowed = Math.min(want, current.remaining);
+  if (!allowed) return { ...current, allowed: 0 };
+
+  await db
+    .update(profiles)
+    .set({
+      postsFetchedOn: day,
+      postsFetchedToday: current.posts_fetched_today + allowed,
+      updatedAt: now()
+    })
+    .where(eq(profiles.userId, userId));
+
+  const after = await getScrapeQuota(userId);
+  return { ...after, allowed };
+}
+
+/** Return unused reserved scrape slots (e.g. scrape stopped early). */
+export async function refundScrapeQuota(userId: string, unused: number): Promise<ScrapeQuota> {
+  const amount = Math.max(0, Math.floor(Number(unused) || 0));
+  if (!amount) return getScrapeQuota(userId);
+
+  const day = todayKey();
+  const db = getDb();
+  const [row] = await db
+    .select({
+      postsFetchedOn: profiles.postsFetchedOn,
+      postsFetchedToday: profiles.postsFetchedToday
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+
+  if (!row || row.postsFetchedOn !== day) return getScrapeQuota(userId);
+
+  const next = Math.max(0, row.postsFetchedToday - amount);
+  await db
+    .update(profiles)
+    .set({ postsFetchedToday: next, updatedAt: now() })
+    .where(eq(profiles.userId, userId));
+
+  return getScrapeQuota(userId);
+}
+
+/** Atomically claim up to `requested` CSV import slots for today. */
+export async function reserveImportQuota(
+  userId: string,
+  requested: number
+): Promise<DailyQuota & { allowed: number }> {
+  const want = Math.max(0, Math.floor(Number(requested) || 0));
+  if (!want) {
+    const quota = await getImportQuota(userId);
+    return { ...quota, allowed: 0 };
+  }
+
+  const day = todayKey();
+  const db = getDb();
+  await ensureUserDefaults(userId);
+
+  await db
+    .update(profiles)
+    .set({
+      postsImportedOn: day,
+      postsImportedToday: 0,
+      updatedAt: now()
+    })
+    .where(and(eq(profiles.userId, userId), ne(profiles.postsImportedOn, day)));
+
+  const [before] = await db
+    .select({
+      plan: profiles.plan,
+      dailyPostLimit: profiles.dailyPostLimit,
+      postsFetchedOn: profiles.postsFetchedOn,
+      postsFetchedToday: profiles.postsFetchedToday,
+      postsImportedOn: profiles.postsImportedOn,
+      postsImportedToday: profiles.postsImportedToday
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+
+  if (!before) throw new Error("Profile missing for import quota.");
+  const current = importQuotaFromRow(before, day);
+  const allowed = Math.min(want, current.remaining);
+  if (!allowed) return { ...current, allowed: 0 };
+
+  await db
+    .update(profiles)
+    .set({
+      postsImportedOn: day,
+      postsImportedToday: current.used + allowed,
+      updatedAt: now()
+    })
+    .where(eq(profiles.userId, userId));
+
+  const after = await getImportQuota(userId);
+  return { ...after, allowed };
 }
 
 export async function getNotesForDraft(draftId: number): Promise<DraftNote[]> {

@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { isUser, requireUser } from "@/lib/auth";
-import { getNotesByDraftIds, getPosts, getPublicProfile, getPublicSmtpSettings, listDrafts } from "@/lib/db";
+import {
+  getAllDailyQuotas,
+  getNotesByDraftIds,
+  getPosts,
+  getPublicProfile,
+  getPublicSmtpSettings,
+  listDrafts
+} from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -23,6 +30,7 @@ export async function GET() {
     profile: await getPublicProfile(user.id),
     posts: await getPosts(user.id),
     drafts,
-    smtp: await getPublicSmtpSettings(user.id)
+    smtp: await getPublicSmtpSettings(user.id),
+    quota: await getAllDailyQuotas(user.id)
   });
 }

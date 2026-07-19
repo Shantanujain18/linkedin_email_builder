@@ -20,7 +20,7 @@ export default function LoginPage() {
       const supabase = createClient();
       const { error: signError } = await supabase.auth.signInWithPassword({ email, password });
       if (signError) throw signError;
-      router.replace("/");
+      router.replace("/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed.");
@@ -35,6 +35,9 @@ export default function LoginPage() {
         <p className="eyebrow" style={{ marginBottom: 10 }}>ReachPod</p>
         <h1>Sign in</h1>
         <p className="subtitle">Access your LinkedIn outreach workspace.</p>
+        <p className="hint" style={{ marginTop: 8 }}>
+          <a href="/">← Back to ReachPod</a>
+        </p>
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Email</label>
           <input

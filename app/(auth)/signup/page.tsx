@@ -29,7 +29,7 @@ export default function SignupPage() {
         setError("Check your email to confirm the account, then sign in.");
         return;
       }
-      router.replace("/");
+      router.replace("/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign up failed.");
@@ -44,6 +44,9 @@ export default function SignupPage() {
         <p className="eyebrow" style={{ marginBottom: 10 }}>ReachPod</p>
         <h1>Create account</h1>
         <p className="subtitle">Each account keeps its own resume, posts, drafts, and SMTP settings.</p>
+        <p className="hint" style={{ marginTop: 8 }}>
+          <a href="/">← Back to ReachPod</a>
+        </p>
         <form onSubmit={onSubmit}>
           <label htmlFor="name">Name</label>
           <input

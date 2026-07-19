@@ -4,6 +4,7 @@ import {
   emailedTodaySet,
   getDraftsForSend,
   getProfile,
+  getSendQuota,
   getSmtpSettings,
   normalizeEmail,
   recordEmailSent,
@@ -47,7 +48,21 @@ export async function POST(request: Request) {
     });
 
     if (!drafts.length) {
-      return NextResponse.json({ error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." }, { status: 404 });
+      return NextResponse.json(
+        { error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." },
+        { status: 404 }
+      );
+    }
+
+    const sendQuota = await getSendQuota(user.id);
+    if (sendQuota.remaining <= 0) {
+      return NextResponse.json(
+        {
+          error: `Daily email send limit reached (${sendQuota.daily_post_limit}/day on the ${sendQuota.plan} plan).`,
+          quota: sendQuota
+        },
+        { status: 429 }
+      );
     }
 
     const profile = await getProfile(user.id);
@@ -56,9 +71,12 @@ export async function POST(request: Request) {
       const path = String(profile?.resume_path || "");
       const downloaded = path ? await downloadResume(path) : null;
       if (!downloaded) {
-        return NextResponse.json({
-          error: "Attach resume is enabled, but no resume file is stored. Re-upload the resume first."
-        }, { status: 400 });
+        return NextResponse.json(
+          {
+            error: "Attach resume is enabled, but no resume file is stored. Re-upload the resume first."
+          },
+          { status: 400 }
+        );
       }
       attachment = {
         filename: String(profile?.resume_filename || "resume.pdf"),
@@ -74,8 +92,10 @@ export async function POST(request: Request) {
 
     let sent = 0;
     let skipped = 0;
+    let limited = 0;
     const errors: Array<{ id: number; error: string }> = [];
     const skippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
+    let remainingSends = sendQuota.remaining;
 
     for (const draft of drafts) {
       const email = normalizeEmail(draft.recipientEmail);
@@ -106,6 +126,16 @@ export async function POST(request: Request) {
         continue;
       }
 
+      if (remainingSends <= 0) {
+        limited += 1;
+        skippedDrafts.push({
+          id: draft.id,
+          email,
+          reason: `Daily send limit reached (${sendQuota.daily_post_limit}/day).`
+        });
+        continue;
+      }
+
       try {
         await sendMail({
           smtp,
@@ -119,6 +149,7 @@ export async function POST(request: Request) {
         alreadyToday.add(email);
         sentThisRun.add(email);
         sent += 1;
+        remainingSends -= 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Send failed.";
         await updateDraftStatus(user.id, draft.id, "failed");
@@ -126,16 +157,23 @@ export async function POST(request: Request) {
       }
     }
 
+    const quotaAfter = await getSendQuota(user.id);
+
     return NextResponse.json({
       sent,
       skipped,
+      limited,
       failed: errors.length,
       errors,
       skipped_drafts: skippedDrafts,
       attached_resume: Boolean(attachment),
+      quota: quotaAfter,
       day
     });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to send email." }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to send email." },
+      { status: 500 }
+    );
   }
 }
