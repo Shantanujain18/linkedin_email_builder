@@ -34,7 +34,7 @@ export default function ForgotPasswordPage() {
     <main className="auth-page">
       <section className="card auth-card">
         <p className="eyebrow" style={{ marginBottom: 10 }}>
-          Email Drafter
+          ReachPod
         </p>
         <h1>Forgot password</h1>
         <p className="subtitle">

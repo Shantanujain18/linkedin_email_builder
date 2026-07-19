@@ -83,7 +83,7 @@ export default function ResetPasswordPage() {
       <main className="auth-page">
         <section className="card auth-card">
           <p className="eyebrow" style={{ marginBottom: 10 }}>
-            Email Drafter
+            ReachPod
           </p>
           <h1>Link expired</h1>
           <p className="subtitle">
@@ -101,7 +101,7 @@ export default function ResetPasswordPage() {
     <main className="auth-page">
       <section className="card auth-card">
         <p className="eyebrow" style={{ marginBottom: 10 }}>
-          Email Drafter
+          ReachPod
         </p>
         <h1>Set new password</h1>
         <p className="subtitle">Choose a new password for your account.</p>

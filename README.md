@@ -1,4 +1,4 @@
-# LinkedIn Email Drafter
+# ReachPod
 
 Next.js app that turns a resume + LinkedIn post CSV into reviewable outreach drafts, with SMTP send and multi-user auth via **Supabase**.
 

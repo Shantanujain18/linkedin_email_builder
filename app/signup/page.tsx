@@ -41,7 +41,7 @@ export default function SignupPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
-        <p className="eyebrow" style={{ marginBottom: 10 }}>Email Drafter</p>
+        <p className="eyebrow" style={{ marginBottom: 10 }}>ReachPod</p>
         <h1>Create account</h1>
         <p className="subtitle">Each account keeps its own resume, posts, drafts, and SMTP settings.</p>
         <form onSubmit={onSubmit}>

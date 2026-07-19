@@ -32,7 +32,7 @@ export default function LoginPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
-        <p className="eyebrow" style={{ marginBottom: 10 }}>Email Drafter</p>
+        <p className="eyebrow" style={{ marginBottom: 10 }}>ReachPod</p>
         <h1>Sign in</h1>
         <p className="subtitle">Access your LinkedIn outreach workspace.</p>
         <form onSubmit={onSubmit}>

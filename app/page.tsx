@@ -653,9 +653,9 @@ export default function Home() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="sidebar-logo">LE</div>
+          <div className="sidebar-logo">RP</div>
           <div>
-            <h1>Email Drafter</h1>
+            <h1>ReachPod</h1>
             <span>LinkedIn outreach</span>
           </div>
         </div>
@@ -818,7 +818,7 @@ export default function Home() {
                       <code>dist</code> folder.
                     </li>
                     <li>
-                      Pin <strong>LinkedIn Post CSV Scraper</strong> from the Extensions menu.
+                      Pin <strong>ReachPod</strong> from the Extensions menu.
                     </li>
                     <li>
                       Open LinkedIn, click the extension, search/export posts, then import the CSV
