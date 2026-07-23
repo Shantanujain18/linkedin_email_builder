@@ -304,6 +304,37 @@ body:has(.auth-loading) {
   color: #6b7280;
 }
 
+.upgrade-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(79, 110, 247, 0.45);
+  background: rgba(79, 110, 247, 0.15);
+  color: #c7d2fe;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.upgrade-btn:hover {
+  background: rgba(79, 110, 247, 0.28);
+  border-color: rgba(79, 110, 247, 0.7);
+  color: #fff;
+}
+
+.upgrade-btn-top {
+  display: none;
+  width: auto;
+  margin-top: 0;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
 .user-row {
   display: flex;
   align-items: center;
@@ -2141,6 +2172,7 @@ code {
   .nav-badge { display: none; }
   .sidebar-footer { display: none; }
   .sidebar-quota { display: none; }
+  .upgrade-btn-top { display: inline-flex; }
   .main-inner,
   .main-inner.fluid { padding: 20px 16px 48px; }
   .page-header { flex-direction: column; }

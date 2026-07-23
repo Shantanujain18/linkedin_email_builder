@@ -746,6 +746,13 @@ export default function Home() {
   const scrapeRemaining = stats.quota?.scrape?.remaining ?? null;
   const toastError = Boolean(status && /fail|error|required|invalid|expired/i.test(status));
   const toastKind = busy ? "loading" : toastError ? "error" : status ? "success" : null;
+  const upgradeHref = `/contact?${new URLSearchParams({
+    name: user.name || "",
+    email: user.email || "",
+    plan: "pro",
+    source: "dashboard-upgrade",
+    message: `I'd like to upgrade from my ${planLabel} plan. Please raise my daily limits / switch me to Pro.`
+  }).toString()}`;
 
   return (
     <div className="app-shell">
@@ -787,6 +794,9 @@ export default function Home() {
             <QuotaMeter label="Import leads" used={importUsed} limit={dailyLimit} remaining={importRemaining} />
             <QuotaMeter label="Emails sent" used={sendUsed} limit={dailyLimit} remaining={sendRemaining} />
           </div>
+          <a className="upgrade-btn" href={upgradeHref}>
+            Upgrade
+          </a>
         </div>
         <div className="sidebar-footer">
           <div className="user-row">
@@ -809,6 +819,7 @@ export default function Home() {
                 Signed in as <strong>{displayName}</strong>
               </span>
               <span className="plan-pill compact">{planLabel}</span>
+              <a className="upgrade-btn upgrade-btn-top" href={upgradeHref}>Upgrade</a>
               <button type="button" className="btn-ghost-sm" disabled={busy} onClick={signOut}>Sign out</button>
             </div>
           </div>
