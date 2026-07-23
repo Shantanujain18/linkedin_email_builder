@@ -1,7 +1,8 @@
 "use client";
 
 import confetti from "canvas-confetti";
-import { FormEvent, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 
@@ -19,12 +20,13 @@ type Props = {
   className?: string;
 };
 
-export function ContactForm({
+function ContactFormInner({
   defaultPlan = "service",
   source = "website",
   compact = false,
   className
 }: Props) {
+  const searchParams = useSearchParams();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [plan, setPlan] = useState(defaultPlan);
@@ -32,6 +34,20 @@ export function ContactForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [formSource, setFormSource] = useState(source);
+
+  useEffect(() => {
+    const qName = searchParams.get("name");
+    const qEmail = searchParams.get("email");
+    const qPlan = searchParams.get("plan");
+    const qMessage = searchParams.get("message");
+    const qSource = searchParams.get("source");
+    if (qName) setName(qName);
+    if (qEmail) setEmail(qEmail);
+    if (qPlan && PLANS.some((p) => p.value === qPlan)) setPlan(qPlan);
+    if (qMessage) setMessage(qMessage);
+    if (qSource) setFormSource(qSource);
+  }, [searchParams]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -42,13 +58,11 @@ export function ContactForm({
       const response = await fetch("/api/contact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, plan, message, source })
+        body: JSON.stringify({ name, email, plan, message, source: formSource })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not send message.");
       setDone(data.message || "Thanks — we will reply soon.");
-      setName("");
-      setEmail("");
       setMessage("");
       confetti({
         particleCount: 90,
@@ -147,5 +161,19 @@ export function ContactForm({
         directly.
       </p>
     </form>
+  );
+}
+
+export function ContactForm(props: Props) {
+  return (
+    <Suspense
+      fallback={
+        <div className={cn("space-y-3 text-left text-sm text-text-muted", props.className)}>
+          Loading form…
+        </div>
+      }
+    >
+      <ContactFormInner {...props} />
+    </Suspense>
   );
 }

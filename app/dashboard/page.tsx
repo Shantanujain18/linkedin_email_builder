@@ -73,16 +73,14 @@ type Stats = {
   quota: QuotaBundle | null;
 };
 
-type PageId = "resume" | "csv" | "generate" | "smtp" | "send";
+type PageId = "profile" | "leads" | "send";
 type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped";
 type PageSize = 25 | 50 | 100;
 
-const PAGES: Array<{ id: PageId; label: string }> = [
-  { id: "resume", label: "Resume" },
-  { id: "csv", label: "LinkedIn CSV" },
-  { id: "generate", label: "Generate" },
-  { id: "smtp", label: "SMTP" },
-  { id: "send", label: "Send" }
+const PAGES: Array<{ id: PageId; label: string; step: number }> = [
+  { id: "profile", label: "Your profile", step: 1 },
+  { id: "leads", label: "Find people", step: 2 },
+  { id: "send", label: "Send emails", step: 3 }
 ];
 
 const defaultSmtp: Smtp = {
@@ -234,7 +232,9 @@ export default function Home() {
   const router = useRouter();
   const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<{ id: string; email: string; name: string } | null>(null);
-  const [currentPage, setCurrentPage] = useState<PageId>("resume");
+  const [currentPage, setCurrentPage] = useState<PageId>("profile");
+  const [smtpAdvanced, setSmtpAdvanced] = useState(false);
+  const [emailSetupOpen, setEmailSetupOpen] = useState(true);
   const [stats, setStats] = useState<Stats>({
     profile: null,
     posts: [],
@@ -244,6 +244,7 @@ export default function Home() {
   });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [immediateJoiner, setImmediateJoiner] = useState(false);
   const [skillList, setSkillList] = useState<string[]>([]);
   const [newSkill, setNewSkill] = useState("");
@@ -268,6 +269,7 @@ export default function Home() {
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const emailSetupInit = useRef(false);
 
   async function refresh() {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -291,6 +293,10 @@ export default function Home() {
     setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
     setSkillList(parseSkills(String(data.profile?.top_skills || "")));
     setBulkAttachResume(smtp.attach_resume !== false);
+    if (!emailSetupInit.current) {
+      setEmailSetupOpen(!smtp.configured);
+      emailSetupInit.current = true;
+    }
     setSmtpForm((prev) => ({
       host: smtp.host || "smtp.gmail.com",
       port: String(smtp.port || 587),
@@ -332,25 +338,48 @@ export default function Home() {
 
   useEffect(() => { setPage(1); }, [statusFilter, pageSize, searchQuery]);
 
+  function showStatus(message: string) {
+    if (statusTimer.current) {
+      clearTimeout(statusTimer.current);
+      statusTimer.current = null;
+    }
+    setStatus(message);
+  }
+
+  useEffect(() => {
+    if (!status || busy) return;
+    const isError = /fail|error|required|invalid|expired/i.test(status);
+    statusTimer.current = setTimeout(() => setStatus(""), isError ? 8000 : 4500);
+    return () => {
+      if (statusTimer.current) clearTimeout(statusTimer.current);
+    };
+  }, [status, busy]);
+
+  useEffect(() => {
+    return () => {
+      if (statusTimer.current) clearTimeout(statusTimer.current);
+    };
+  }, []);
+
   async function uploadResume(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setStatus("Reading resume and extracting profile…");
+    event.preventDefault(); setBusy(true); showStatus("Reading resume and extracting profile…");
     const form = new FormData(event.currentTarget);
     const response = await fetch("/api/resume", { method: "POST", body: form });
-    const data = await response.json(); setBusy(false); setStatus(data.error || "Candidate profile saved.");
+    const data = await response.json(); setBusy(false); showStatus(data.error || "Candidate profile saved.");
     if (response.ok) refresh();
   }
 
   async function persistSkills(nextSkills: string[]) {
     setSkillList(nextSkills);
     if (!stats.profile) return;
-    setBusy(true); setStatus("Saving skills…");
+    setBusy(true); showStatus("Saving skills…");
     const response = await fetch("/api/profile", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ top_skills: nextSkills.join(", ") })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || "Skills updated. Regenerate drafts to use them in new emails.");
+    showStatus(data.error || "Skills updated. Regenerate drafts to use them in new emails.");
     if (response.ok) refresh();
     else setSkillList(parseSkills(String(stats.profile.top_skills || "")));
   }
@@ -361,7 +390,7 @@ export default function Home() {
     if (!skill) return;
     const exists = skillList.some((item) => item.toLowerCase() === skill.toLowerCase());
     if (exists) {
-      setStatus(`"${skill}" is already in your skills list.`);
+      showStatus(`"${skill}" is already in your skills list.`);
       setNewSkill("");
       return;
     }
@@ -376,14 +405,14 @@ export default function Home() {
   async function toggleImmediateJoiner(checked: boolean) {
     setImmediateJoiner(checked);
     if (!stats.profile) return;
-    setBusy(true); setStatus("Saving joining availability…");
+    setBusy(true); showStatus("Saving joining availability…");
     const response = await fetch("/api/profile", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ immediate_joiner: checked })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(
+    showStatus(
       data.error ||
         (checked
           ? "Marked as immediate joiner. Regenerate drafts to include it in emails."
@@ -394,61 +423,40 @@ export default function Home() {
   }
 
   async function importCsv(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setStatus("Importing LinkedIn posts and detecting emails…");
+    event.preventDefault(); setBusy(true); showStatus("Importing leads from your file… Please wait.");
     const response = await fetch("/api/linkedin/import", { method: "POST", body: new FormData(event.currentTarget) });
     const data = await response.json(); setBusy(false);
     if (!response.ok) {
-      setStatus(data.error || "CSV import failed.");
+      showStatus(data.error || "CSV import failed.");
       return;
     }
     const parts = [`Imported ${data.imported || 0} posts`];
     if (data.truncated) parts.push(`${data.truncated} skipped (daily import limit)`);
     if (data.quota) parts.push(`${data.quota.remaining} import slots left today`);
-    setStatus(parts.join(" · ") + ".");
+    showStatus(parts.join(" · ") + ".");
     refresh();
   }
 
   async function generate() {
-    setBusy(true); setStatus("Generating skill-matched email drafts…");
+    setBusy(true); showStatus("Writing personalized emails… Please wait.");
     const response = await fetch("/api/drafts", { method: "POST" });
     const data = await response.json(); setBusy(false);
     if (!response.ok) {
-      setStatus(data.error || "Draft generation failed.");
+      showStatus(data.error || "Draft generation failed.");
       return;
     }
     const parts = [`Created ${data.created || 0} drafts`];
     if (data.skipped) parts.push(`${data.skipped} skipped (weak/no skill match)`);
-    setStatus(parts.join(" · ") + ".");
-    refresh();
-  }
-
-  async function enrichDrafts(options: { ids?: number[]; all?: boolean } = {}) {
-    const ids = options.ids || [];
-    const label = options.all
-      ? "all drafts missing details"
-      : `${ids.length} selected draft(s)`;
-    if (!options.all && !ids.length) return;
-    setBusy(true); setStatus(`Extracting recruiter/job details for ${label}…`);
-    const response = await fetch("/api/drafts/enrich", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(options.all ? { only_missing: true } : { ids, only_missing: false })
-    });
-    const data = await response.json(); setBusy(false);
-    if (!response.ok) {
-      setStatus(data.error || "Enrichment failed.");
-      return;
-    }
-    setStatus(data.message || `Enriched ${data.enriched || 0} of ${data.processed || 0} draft(s). Email text was left unchanged.`);
+    showStatus(parts.join(" · ") + ".");
     refresh();
   }
 
   async function clearAllDrafts() {
     if (!window.confirm("Clear all drafts? This cannot be undone.")) return;
-    setBusy(true); setStatus("Clearing drafts…");
+    setBusy(true); showStatus("Clearing drafts…");
     const response = await fetch("/api/drafts", { method: "DELETE" });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || `Cleared ${data.deleted || 0} drafts.`);
+    showStatus(data.error || `Cleared ${data.deleted || 0} drafts.`);
     if (response.ok) {
       setSelectedIds([]);
       refresh();
@@ -458,14 +466,14 @@ export default function Home() {
   async function deleteSelectedDrafts() {
     if (!selectedIds.length) return;
     if (!window.confirm(`Delete ${selectedIds.length} selected draft(s)? This cannot be undone.`)) return;
-    setBusy(true); setStatus("Deleting selected drafts…");
+    setBusy(true); showStatus("Deleting selected drafts…");
     const response = await fetch("/api/drafts", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids: selectedIds })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || `Deleted ${data.deleted || 0} draft(s).`);
+    showStatus(data.error || `Deleted ${data.deleted || 0} draft(s).`);
     if (response.ok) {
       setSelectedIds([]);
       cancelEdit();
@@ -474,7 +482,7 @@ export default function Home() {
   }
 
   async function saveSmtp(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setStatus("Saving SMTP settings…");
+    event.preventDefault(); setBusy(true); showStatus("Connecting your email…");
     const response = await fetch("/api/smtp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -490,10 +498,11 @@ export default function Home() {
       })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || "SMTP settings saved.");
+    showStatus(data.error || "Email connected. You can send now.");
     if (response.ok) {
       setSmtpForm((prev) => ({ ...prev, pass: "" }));
       setBulkAttachResume(smtpForm.attach_resume);
+      setEmailSetupOpen(false);
       refresh();
     }
   }
@@ -527,7 +536,7 @@ export default function Home() {
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (editingId == null) return;
-    setBusy(true); setStatus("Saving draft…");
+    setBusy(true); showStatus("Saving draft…");
     const response = await fetch("/api/drafts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -535,35 +544,35 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     if (!response.ok) {
-      setStatus(data.error || "Failed to save draft.");
+      showStatus(data.error || "Failed to save draft.");
       return;
     }
-    setStatus("Draft updated.");
+    showStatus("Draft updated.");
     cancelEdit();
     refresh();
   }
 
   async function toggleCalled(draft: Draft, called: boolean) {
-    setBusy(true); setStatus(called ? "Marking as called…" : "Clearing called mark…");
+    setBusy(true); showStatus(called ? "Marking as called…" : "Clearing called mark…");
     const response = await fetch("/api/drafts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: draft.id, called })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || (called ? "Marked as called." : "Call mark cleared."));
+    showStatus(data.error || (called ? "Marked as called." : "Call mark cleared."));
     if (response.ok) refresh();
   }
 
   async function toggleReplied(draft: Draft, replied: boolean) {
-    setBusy(true); setStatus(replied ? "Marking as replied…" : "Clearing replied mark…");
+    setBusy(true); showStatus(replied ? "Marking as replied…" : "Clearing replied mark…");
     const response = await fetch("/api/drafts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: draft.id, replied })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(
+    showStatus(
       data.error ||
         (replied
           ? "Marked as replied. Automation will not email this address again."
@@ -575,7 +584,7 @@ export default function Home() {
   async function addNote(event: React.FormEvent) {
     event.preventDefault();
     if (detailId == null || !noteText.trim()) return;
-    setBusy(true); setStatus("Saving note…");
+    setBusy(true); showStatus("Saving note…");
     const response = await fetch("/api/drafts/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -583,24 +592,24 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     if (!response.ok) {
-      setStatus(data.error || "Failed to save note.");
+      showStatus(data.error || "Failed to save note.");
       return;
     }
     setNoteText("");
-    setStatus("Note added.");
+    showStatus("Note added.");
     refresh();
   }
 
   async function removeNote(noteId: number) {
     if (!window.confirm("Delete this note?")) return;
-    setBusy(true); setStatus("Deleting note…");
+    setBusy(true); showStatus("Deleting note…");
     const response = await fetch("/api/drafts/notes", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: noteId })
     });
     const data = await response.json(); setBusy(false);
-    setStatus(data.error || "Note deleted.");
+    showStatus(data.error || "Note deleted.");
     if (response.ok) refresh();
   }
 
@@ -618,8 +627,9 @@ export default function Home() {
         ? `${options.draftIds.length} selected draft(s)`
         : "this draft";
     const withResume = bulkAttachResume ? " with resume attached" : " without resume";
-    if (!window.confirm(`Send ${label} via SMTP${withResume}?`)) return;
-    setBusy(true); setStatus(`Bulk sending ${count} email(s)…`);
+    if (!window.confirm(`Send ${label}${withResume}?`)) return;
+    setBusy(true);
+    showStatus(count === 1 ? "Sending email…" : `Sending ${count} emails… Please wait.`);
     const response = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -630,7 +640,7 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     if (!response.ok) {
-      setStatus(data.error || "Send failed.");
+      showStatus(data.error || "Send failed.");
       return;
     }
     const parts = [`Sent ${data.sent || 0}`];
@@ -639,7 +649,7 @@ export default function Home() {
     if (data.failed) parts.push(`${data.failed} failed`);
     if (data.attached_resume) parts.push("resume attached");
     if (data.quota) parts.push(`${data.quota.remaining} sends left today`);
-    setStatus(parts.join(" · ") + ".");
+    showStatus(parts.join(" · ") + ".");
     setSelectedIds([]);
     refresh();
   }
@@ -706,20 +716,24 @@ export default function Home() {
   }
 
   function navMeta(id: PageId): { dot: "done" | "pending" | "empty"; badge?: string } {
-    if (id === "resume") return { dot: stats.profile ? "done" : "empty" };
-    if (id === "csv") {
+    if (id === "profile") return { dot: stats.profile ? "done" : "empty" };
+    if (id === "leads") {
+      const ready = stats.posts.length > 0 && stats.drafts.length > 0;
       return {
-        dot: stats.posts.length ? "done" : "empty",
+        dot: ready ? "done" : stats.posts.length ? "pending" : "empty",
         badge: stats.posts.length ? String(stats.posts.length) : undefined
       };
     }
-    if (id === "generate") return { dot: stats.drafts.length ? "done" : "pending" };
-    if (id === "smtp") return { dot: stats.smtp.configured ? "done" : "empty" };
     return {
-      dot: "done",
+      dot: stats.smtp.configured && stats.drafts.length ? "done" : stats.smtp.configured ? "pending" : "empty",
       badge: unsentCount ? String(unsentCount) : undefined
     };
   }
+
+  const profileReady = Boolean(stats.profile);
+  const leadsImported = stats.posts.length > 0;
+  const draftsReady = stats.drafts.length > 0;
+  const emailReady = stats.smtp.configured;
 
   if (!authReady || !user) {
     return <div className="auth-loading"><p>Loading workspace…</p></div>;
@@ -730,6 +744,15 @@ export default function Home() {
   const planLabel = planName.replace(/\b\w/g, (c) => c.toUpperCase());
   const scrapeUsed = stats.quota?.scrape?.posts_fetched_today ?? 0;
   const scrapeRemaining = stats.quota?.scrape?.remaining ?? null;
+  const toastError = Boolean(status && /fail|error|required|invalid|expired/i.test(status));
+  const toastKind = busy ? "loading" : toastError ? "error" : status ? "success" : null;
+  const upgradeHref = `/contact?${new URLSearchParams({
+    name: user.name || "",
+    email: user.email || "",
+    plan: "pro",
+    source: "dashboard-upgrade",
+    message: `I'd like to upgrade from my ${planLabel} plan. Please raise my daily limits / switch me to Pro.`
+  }).toString()}`;
 
   return (
     <div className="app-shell">
@@ -752,7 +775,10 @@ export default function Home() {
                 onClick={() => setCurrentPage(item.id)}
               >
                 <span className={`nav-dot ${meta.dot}`} aria-hidden />
-                <span className="nav-label">{item.label}</span>
+                <span className="nav-label">
+                  <span className="nav-step-num">{item.step}</span>
+                  {item.label}
+                </span>
                 {meta.badge ? <span className="nav-badge">{meta.badge}</span> : null}
               </button>
             );
@@ -765,9 +791,12 @@ export default function Home() {
           </div>
           <div className="quota-meters">
             <QuotaMeter label="Scrape" used={scrapeUsed} limit={dailyLimit} remaining={scrapeRemaining} />
-            <QuotaMeter label="CSV import" used={importUsed} limit={dailyLimit} remaining={importRemaining} />
-            <QuotaMeter label="Email send" used={sendUsed} limit={dailyLimit} remaining={sendRemaining} />
+            <QuotaMeter label="Import leads" used={importUsed} limit={dailyLimit} remaining={importRemaining} />
+            <QuotaMeter label="Emails sent" used={sendUsed} limit={dailyLimit} remaining={sendRemaining} />
           </div>
+          <a className="upgrade-btn" href={upgradeHref}>
+            Upgrade
+          </a>
         </div>
         <div className="sidebar-footer">
           <div className="user-row">
@@ -790,17 +819,16 @@ export default function Home() {
                 Signed in as <strong>{displayName}</strong>
               </span>
               <span className="plan-pill compact">{planLabel}</span>
+              <a className="upgrade-btn upgrade-btn-top" href={upgradeHref}>Upgrade</a>
               <button type="button" className="btn-ghost-sm" disabled={busy} onClick={signOut}>Sign out</button>
             </div>
           </div>
 
-          {status ? <p className={`status-toast${/fail|error|required/i.test(status) ? " error" : ""}`}>{status}</p> : null}
-
-          {currentPage === "resume" && (
+          {currentPage === "profile" && (
             <section className="page-view">
               <PageHeader
-                title="Candidate Resume"
-                subtitle="Upload your resume to extract your profile and skills for matched outreach."
+                title="Step 1 · Your profile"
+                subtitle="Upload your resume once. We’ll use your skills to write personalized emails."
               />
               <div className="card">
                 <form onSubmit={uploadResume}>
@@ -809,13 +837,13 @@ export default function Home() {
                     name="resume"
                     accept=".pdf,.docx,.txt"
                     required
-                    label="Drop resume or click to browse"
+                    label="Drop your resume here, or click to browse"
                     hint="PDF, DOCX, or TXT · max 10 MB"
                     fileName={resumeFileName}
                     onFile={(file) => setResumeFileName(file?.name || "")}
                   />
                   <div className="actions-row">
-                    <button type="submit" disabled={busy}>Extract profile</button>
+                    <button type="submit" disabled={busy}>Save my profile</button>
                   </div>
                 </form>
                 <label className="checkbox">
@@ -825,14 +853,14 @@ export default function Home() {
                     disabled={busy || !stats.profile}
                     onChange={(e) => toggleImmediateJoiner(e.target.checked)}
                   />
-                  Immediate joiner (mention availability in generated emails)
+                  I’m available to join immediately (mention this in emails)
                 </label>
                 {stats.profile && (
                   <>
                     <div className="skills-panel">
-                      <label className="field-label">Skills</label>
+                      <label className="field-label">Your skills</label>
                       {skillList.length === 0 ? (
-                        <p className="hint">No skills yet. Add one below.</p>
+                        <p className="hint">No skills yet. Add the ones you want matched to job posts.</p>
                       ) : (
                         <ul className="skill-chips">
                           {skillList.map((skill) => (
@@ -851,52 +879,77 @@ export default function Home() {
                           value={newSkill}
                           disabled={busy}
                           onChange={(e) => setNewSkill(e.target.value)}
-                          placeholder="Add skill…"
+                          placeholder="Add a skill…"
                           autoComplete="off"
                         />
                         <button type="submit" className="btn-secondary btn-compact" disabled={busy || !newSkill.trim()}>Add</button>
                       </form>
                     </div>
-                    <label className="field-label" style={{ marginTop: 18 }}>Profile preview</label>
+                    <label className="field-label" style={{ marginTop: 18 }}>Profile summary</label>
                     <div className="profile-readout">
                       <div><strong>{String(stats.profile.name || "Candidate")}</strong> · {String(stats.profile.current_role || "Role not detected")}</div>
                       <div>Immediate joiner: {immediateJoiner ? "yes" : "no"}</div>
                       <div>Skills: {skillList.length ? skillList.join(", ") : "—"}</div>
                       <div>
                         Resume file: {hasResumeFile
-                          ? String(stats.profile.resume_filename || "stored")
-                          : "missing — re-upload to attach"}
+                          ? String(stats.profile.resume_filename || "saved")
+                          : "missing — re-upload if you want to attach it to emails"}
                       </div>
                     </div>
                   </>
                 )}
               </div>
+              {profileReady ? (
+                <div className="step-next-bar">
+                  <p>Profile saved. Next: find people to email.</p>
+                  <button type="button" onClick={() => setCurrentPage("leads")}>Continue to Find people →</button>
+                </div>
+              ) : (
+                <div className="info-note">Upload a resume to unlock the next step.</div>
+              )}
             </section>
           )}
 
-          {currentPage === "csv" && (
+          {currentPage === "leads" && (
             <section className="page-view">
               <PageHeader
-                title="LinkedIn Posts CSV"
+                title="Step 2 · Find people"
                 subtitle={
                   importRemaining == null
-                    ? "Import the CSV exported from the Chrome extension. Emails are detected automatically."
-                    : `Import the CSV exported from the Chrome extension. Today: ${importUsed}/${dailyLimit} rows imported · ${importRemaining} left.`
+                    ? "Collect LinkedIn hiring posts, then write skill-matched emails."
+                    : `Collect LinkedIn hiring posts, then write emails. Today: ${importUsed}/${dailyLimit} imported · ${importRemaining} left.`
                 }
               />
+
+              {!profileReady ? (
+                <div className="prereq-banner">
+                  <p>Upload your resume first so we can match skills to job posts.</p>
+                  <button type="button" className="btn-secondary btn-compact" onClick={() => setCurrentPage("profile")}>
+                    Go to Your profile
+                  </button>
+                </div>
+              ) : null}
+
               <div className="card">
+                <ol className="step-substeps">
+                  <li className={leadsImported ? "done" : "current"}>
+                    <span className="substep-num">A</span>
+                    <div>
+                      <strong>Get leads from LinkedIn</strong>
+                      <p className="hint">Install the free Chrome extension, export posts, then upload the file here.</p>
+                    </div>
+                  </li>
+                  <li className={draftsReady ? "done" : leadsImported ? "current" : ""}>
+                    <span className="substep-num">B</span>
+                    <div>
+                      <strong>Write personalized emails</strong>
+                      <p className="hint">We’ll draft emails only when your skills match the job.</p>
+                    </div>
+                  </li>
+                </ol>
+
                 <div className="extension-guide">
-                  <p className="hint" style={{ marginTop: 0 }}>
-                    Need the scraper?{" "}
-                    <a
-                      href="https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Download Chrome extension (dist.zip)
-                    </a>
-                  </p>
-                  <h3 className="extension-guide-title">Install the extension</h3>
+                  <h3 className="extension-guide-title">How to get your leads file</h3>
                   <ol className="extension-steps">
                     <li>
                       Download{" "}
@@ -905,220 +958,314 @@ export default function Home() {
                         target="_blank"
                         rel="noopener noreferrer"
                       >
-                        dist.zip
+                        the Chrome extension
                       </a>{" "}
-                      and unzip it (you should get a <code>dist</code> folder).
+                      and unzip it.
                     </li>
                     <li>
-                      Open Chrome and go to <code>chrome://extensions</code>.
+                      Open{" "}
+                      <a
+                        href="chrome://extensions"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          navigator.clipboard?.writeText("chrome://extensions").then(
+                            () => showStatus("Copied chrome://extensions — paste it in Chrome’s address bar."),
+                            () => showStatus("Open chrome://extensions in Chrome’s address bar.")
+                          );
+                        }}
+                      >
+                        chrome://extensions
+                      </a>
+                      , turn on <strong>Developer mode</strong>, click{" "}
+                      <strong>Load unpacked</strong>, and select the unzipped folder.
                     </li>
-                    <li>Turn on <strong>Developer mode</strong> (top right).</li>
                     <li>
-                      Click <strong>Load unpacked</strong> and select the unzipped{" "}
-                      <code>dist</code> folder.
-                    </li>
-                    <li>
-                      Pin <strong>ReachPod</strong> from the Extensions menu.
-                    </li>
-                    <li>
-                      Open LinkedIn, click the extension, search/export posts, then import the CSV
-                      below.
+                      On LinkedIn, use the extension to search and export posts — then upload that file below.
                     </li>
                   </ol>
                 </div>
+
                 <form onSubmit={importCsv}>
                   <FileDropzone
                     id="linkedin-csv"
                     name="csv"
                     accept=".csv,text/csv"
                     required
-                    label="Drop LinkedIn CSV or click to browse"
-                    hint="Exported posts with email matches detected on import"
+                    label="Drop your leads file here, or click to browse"
+                    hint="CSV exported from the Chrome extension · emails are detected automatically"
                     fileName={csvFileName}
                     onFile={(file) => setCsvFileName(file?.name || "")}
                   />
                   <div className="actions-row">
-                    <button type="submit" disabled={busy || importRemaining === 0}>
-                      Import posts
+                    <button type="submit" disabled={busy || importRemaining === 0 || !profileReady}>
+                      Import leads
                     </button>
                   </div>
+                  {!profileReady ? (
+                    <p className="hint" style={{ marginTop: 10 }}>
+                      Finish Step 1 (Your profile) before importing.
+                    </p>
+                  ) : null}
                   {importRemaining === 0 ? (
                     <p className="hint" style={{ marginTop: 10 }}>
-                      Daily CSV import limit reached ({dailyLimit}/day). Raise{" "}
-                      <code>profiles.daily_post_limit</code> for this user to allow more.
+                      You’ve reached today’s import limit ({dailyLimit}/day). Try again tomorrow, or contact us to raise your plan limit.
                     </p>
                   ) : null}
                 </form>
+
                 <div className="stat-chips">
                   <div className="stat-chip">
                     <span className="val">{stats.posts.length}</span>
-                    <span className="lbl">Posts stored</span>
+                    <span className="lbl">Leads imported</span>
                   </div>
                   <div className="stat-chip">
                     <span className="val">{postsWithEmail}</span>
                     <span className="lbl">With email</span>
                   </div>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {currentPage === "generate" && (
-            <section className="page-view">
-              <PageHeader
-                title="Generate Email Drafts"
-                subtitle="Drafts are created only when your skills match the job posting."
-              />
-              <div className="stat-chips">
-                <div className="stat-chip">
-                  <span className="val">{stats.drafts.length}</span>
-                  <span className="lbl">Drafts</span>
-                </div>
-                <div className="stat-chip">
-                  <span className="val">{unsentCount}</span>
-                  <span className="lbl">Unsent</span>
-                </div>
-                <div className="stat-chip">
-                  <span className="val">{sentCount}</span>
-                  <span className="lbl">Sent</span>
-                </div>
-              </div>
-              <div className="card" style={{ marginTop: 16 }}>
-                <p className="eyebrow" style={{ marginBottom: 12 }}>Actions</p>
-                <div className="actions-row">
-                  <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length} type="button">
-                    Generate drafts
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => enrichDrafts({ all: true })}
-                    disabled={busy || !stats.profile || !stats.drafts.length}
-                    type="button"
-                  >
-                    Enrich older drafts
-                  </button>
-                  <a href="/api/export" download>
-                    <button className="btn-secondary" type="button">Download CSV</button>
-                  </a>
-                  <button
-                    className="btn-danger"
-                    onClick={clearAllDrafts}
-                    disabled={busy || !stats.drafts.length}
-                    type="button"
-                  >
-                    Clear all
-                  </button>
-                </div>
-                <div className="info-note">
-                  Mismatched stacks are skipped. Enrich older drafts extracts phone, company, and summary from LinkedIn posts without rewriting email text.
-                </div>
-              </div>
-            </section>
-          )}
-
-          {currentPage === "smtp" && (
-            <section className="page-view">
-              <PageHeader
-                title="SMTP Details"
-                subtitle={
-                  <>
-                    Use Gmail with an App Password. Defaults to smtp.gmail.com:587.{" "}
-                    <a
-                      href="https://support.google.com/mail/answer/185833?hl=en"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      How to create an App Password
-                    </a>
-                  </>
-                }
-                actions={
-                  <span className={`status-badge${stats.smtp.configured ? " ready" : ""}`}>
-                    <span className="dot" />
-                    {stats.smtp.configured ? "Ready to send" : "Not configured"}
-                  </span>
-                }
-              />
-              <div className="card">
-                <form onSubmit={saveSmtp} className="smtp-form">
-                  <div className="fields">
-                    <div>
-                      <label className="field-label" htmlFor="smtp-host">SMTP host</label>
-                      <input id="smtp-host" value={smtpForm.host} onChange={(e) => setSmtpForm({ ...smtpForm, host: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="smtp-port">Port</label>
-                      <input id="smtp-port" type="number" min={1} max={65535} value={smtpForm.port} onChange={(e) => setSmtpForm({ ...smtpForm, port: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="smtp-user">Email / SMTP user</label>
-                      <input id="smtp-user" type="email" autoComplete="username" value={smtpForm.user} onChange={(e) => setSmtpForm({ ...smtpForm, user: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="smtp-pass">
-                        App Password {stats.smtp.has_password ? "(saved — leave blank to keep)" : ""}
-                      </label>
-                      <input
-                        id="smtp-pass"
-                        type="password"
-                        autoComplete="current-password"
-                        value={smtpForm.pass}
-                        onChange={(e) => setSmtpForm({ ...smtpForm, pass: e.target.value })}
-                        placeholder={stats.smtp.has_password ? "••••••••••••••••" : "16-character App Password"}
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="smtp-from-email">From email</label>
-                      <input id="smtp-from-email" type="email" value={smtpForm.from_email} onChange={(e) => setSmtpForm({ ...smtpForm, from_email: e.target.value })} placeholder="Defaults to SMTP user" />
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="smtp-from-name">From name</label>
-                      <input id="smtp-from-name" value={smtpForm.from_name} onChange={(e) => setSmtpForm({ ...smtpForm, from_name: e.target.value })} placeholder="Your name" />
-                    </div>
+                  <div className="stat-chip">
+                    <span className="val">{stats.drafts.length}</span>
+                    <span className="lbl">Email drafts</span>
                   </div>
-                  <label className="checkbox">
-                    <input type="checkbox" checked={smtpForm.attach_resume} onChange={(e) => setSmtpForm({ ...smtpForm, attach_resume: e.target.checked })} />
-                    Default: attach uploaded resume when sending
-                  </label>
+                </div>
+              </div>
+
+              {leadsImported ? (
+                <div className="card" style={{ marginTop: 16 }}>
+                  <h3 className="section-title">Write personalized emails</h3>
+                  <p className="hint" style={{ marginTop: 0 }}>
+                    Creates drafts only when your skills match the job post. You can review and edit before sending.
+                  </p>
                   <div className="actions-row">
-                    <button disabled={busy} type="submit">Save SMTP settings</button>
+                    <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length} type="button">
+                      Write my emails
+                    </button>
+                    <a href="/api/export" download>
+                      <button className="btn-secondary" type="button">Download drafts</button>
+                    </a>
                   </div>
-                </form>
-              </div>
+                  {!draftsReady ? (
+                    <div className="info-note">After importing, click <strong>Write my emails</strong> to create drafts.</div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="info-note">Import leads above to unlock email writing.</div>
+              )}
+
+              {draftsReady ? (
+                <div className="step-next-bar">
+                  <p>{stats.drafts.length} draft{stats.drafts.length === 1 ? "" : "s"} ready. Next: connect your email and send.</p>
+                  <button type="button" onClick={() => setCurrentPage("send")}>Continue to Send emails →</button>
+                </div>
+              ) : null}
             </section>
           )}
 
           {currentPage === "send" && (
             <section className="page-view send-page">
               <PageHeader
-                title="Bulk Send"
+                title="Step 3 · Send emails"
                 subtitle={
                   sendRemaining == null
-                    ? `${stats.drafts.length} drafts · ${unsentCount} unsent · ${sentCount} sent`
-                    : `${stats.drafts.length} drafts · ${unsentCount} unsent · ${sentCount} sent · today ${sendUsed}/${dailyLimit} sent · ${sendRemaining} left`
+                    ? `${stats.drafts.length} drafts · ${unsentCount} ready to send · ${sentCount} sent`
+                    : `${stats.drafts.length} drafts · ${unsentCount} ready · ${sentCount} sent · today ${sendUsed}/${dailyLimit} · ${sendRemaining} left`
                 }
                 actions={
-                  <button
-                    onClick={() => sendDrafts({ all: true })}
-                    disabled={
-                      busy ||
-                      !stats.smtp.configured ||
-                      !unsentCount ||
-                      sendRemaining === 0 ||
-                      (bulkAttachResume && !hasResumeFile)
-                    }
-                    type="button"
-                  >
-                    Bulk send unsent
-                    <span className="btn-count">{unsentCount}</span>
-                  </button>
+                  emailReady && unsentCount ? (
+                    <button
+                      onClick={() => sendDrafts({ all: true })}
+                      disabled={
+                        busy ||
+                        !stats.smtp.configured ||
+                        !unsentCount ||
+                        sendRemaining === 0 ||
+                        (bulkAttachResume && !hasResumeFile)
+                      }
+                      type="button"
+                    >
+                      Send all ready
+                      <span className="btn-count">{unsentCount}</span>
+                    </button>
+                  ) : null
                 }
               />
+
+              {(!draftsReady || !emailReady) ? (
+                <div className="prereq-banner">
+                  <div className="prereq-list">
+                    {!draftsReady ? (
+                      <p>
+                        No email drafts yet.{" "}
+                        <button type="button" className="link-btn" onClick={() => setCurrentPage("leads")}>
+                          Go to Find people
+                        </button>
+                      </p>
+                    ) : null}
+                    {!emailReady ? (
+                      <p>Connect your email below (Gmail App Password) so we can send from your inbox.</p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className={`connect-email-panel${emailReady ? " connected" : ""}`}>
+                {emailReady && !emailSetupOpen ? (
+                  <div className="connect-email-summary">
+                    <div className="connect-email-identity">
+                      <div className="avatar connect-avatar">
+                        {initials(stats.smtp.from_name || "", stats.smtp.from_email || stats.smtp.user || "")}
+                      </div>
+                      <div className="connect-email-meta">
+                        <div className="connect-email-row">
+                          <span className="status-badge ready"><span className="dot" />Connected</span>
+                          <span className="connect-email-label">Sending from your inbox</span>
+                        </div>
+                        <strong className="connect-email-address">
+                          {stats.smtp.from_email || stats.smtp.user}
+                        </strong>
+                        {stats.smtp.from_name ? (
+                          <span className="hint connect-email-from">{stats.smtp.from_name}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-compact"
+                      onClick={() => setEmailSetupOpen(true)}
+                    >
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="connect-email-header">
+                      <div>
+                        <strong>{emailReady ? "Update email settings" : "Connect your email"}</strong>
+                        <p className="hint">
+                          {emailReady
+                            ? "Changes apply to the next emails you send."
+                            : "Gmail works best. Use an App Password — not your normal password."}
+                        </p>
+                      </div>
+                      {emailReady ? (
+                        <button
+                          type="button"
+                          className="btn-ghost-sm"
+                          onClick={() => setEmailSetupOpen(false)}
+                        >
+                          Cancel
+                        </button>
+                      ) : (
+                        <span className="status-badge">
+                          <span className="dot" />
+                          Needed
+                        </span>
+                      )}
+                    </div>
+                    <form onSubmit={saveSmtp} className="smtp-form connect-email-body">
+                      <p className="hint" style={{ marginTop: 0 }}>
+                        Create an{" "}
+                        <a
+                          href="https://support.google.com/mail/answer/185833?hl=en"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          App Password
+                        </a>{" "}
+                        in Google Account → Security → App passwords.
+                      </p>
+                      <div className="fields">
+                        <div>
+                          <label className="field-label" htmlFor="smtp-user">Your Gmail address</label>
+                          <input
+                            id="smtp-user"
+                            type="email"
+                            autoComplete="username"
+                            value={smtpForm.user}
+                            onChange={(e) => setSmtpForm({ ...smtpForm, user: e.target.value })}
+                            required
+                            placeholder="you@gmail.com"
+                          />
+                        </div>
+                        <div>
+                          <label className="field-label" htmlFor="smtp-pass">
+                            App Password {stats.smtp.has_password ? "(saved — leave blank to keep)" : ""}
+                          </label>
+                          <input
+                            id="smtp-pass"
+                            type="password"
+                            autoComplete="current-password"
+                            value={smtpForm.pass}
+                            onChange={(e) => setSmtpForm({ ...smtpForm, pass: e.target.value })}
+                            placeholder={stats.smtp.has_password ? "••••••••••••••••" : "16-character App Password"}
+                          />
+                        </div>
+                        <div>
+                          <label className="field-label" htmlFor="smtp-from-name">Name on emails</label>
+                          <input
+                            id="smtp-from-name"
+                            value={smtpForm.from_name}
+                            onChange={(e) => setSmtpForm({ ...smtpForm, from_name: e.target.value })}
+                            placeholder="Your name"
+                          />
+                        </div>
+                        <div>
+                          <label className="field-label" htmlFor="smtp-from-email">From address (optional)</label>
+                          <input
+                            id="smtp-from-email"
+                            type="email"
+                            value={smtpForm.from_email}
+                            onChange={(e) => setSmtpForm({ ...smtpForm, from_email: e.target.value })}
+                            placeholder="Defaults to your Gmail"
+                          />
+                        </div>
+                      </div>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={smtpForm.attach_resume}
+                          onChange={(e) => setSmtpForm({ ...smtpForm, attach_resume: e.target.checked })}
+                        />
+                        Attach my resume when sending
+                      </label>
+                      <details className="advanced-smtp" open={smtpAdvanced} onToggle={(e) => setSmtpAdvanced((e.target as HTMLDetailsElement).open)}>
+                        <summary>Advanced (other email providers)</summary>
+                        <div className="fields" style={{ marginTop: 12 }}>
+                          <div>
+                            <label className="field-label" htmlFor="smtp-host">Mail server host</label>
+                            <input id="smtp-host" value={smtpForm.host} onChange={(e) => setSmtpForm({ ...smtpForm, host: e.target.value })} required />
+                          </div>
+                          <div>
+                            <label className="field-label" htmlFor="smtp-port">Port</label>
+                            <input id="smtp-port" type="number" min={1} max={65535} value={smtpForm.port} onChange={(e) => setSmtpForm({ ...smtpForm, port: e.target.value })} required />
+                          </div>
+                        </div>
+                      </details>
+                      <div className="actions-row">
+                        <button disabled={busy} type="submit">
+                          {emailReady ? "Save changes" : "Connect email"}
+                        </button>
+                      </div>
+                    </form>
+                  </>
+                )}
+              </div>
+
               {sendRemaining === 0 ? (
                 <p className="hint" style={{ marginBottom: 12 }}>
-                  Daily email send limit reached ({dailyLimit}/day). Raise{" "}
-                  <code>profiles.daily_post_limit</code> for this user to allow more.
+                  You’ve reached today’s send limit ({dailyLimit}/day). Try again tomorrow, or contact us to raise your plan limit.
                 </p>
+              ) : null}
+
+              {bulkAttachResume && !hasResumeFile ? (
+                <div className="prereq-banner" style={{ marginBottom: 12 }}>
+                  <p>
+                    Resume attachment is on, but no resume file is saved.{" "}
+                    <button type="button" className="link-btn" onClick={() => setCurrentPage("profile")}>
+                      Re-upload resume
+                    </button>
+                    {" "}or turn off “Attach resume” below.
+                  </p>
+                </div>
               ) : null}
 
               <div className="send-toolbar">
@@ -1149,14 +1296,6 @@ export default function Home() {
                     Send selected
                   </button>
                   <button
-                    className="btn-secondary btn-compact"
-                    type="button"
-                    onClick={() => enrichDrafts({ ids: selectedIds })}
-                    disabled={busy || !stats.profile || !selectedIds.length}
-                  >
-                    Enrich selected
-                  </button>
-                  <button
                     className="btn-danger btn-compact"
                     type="button"
                     onClick={deleteSelectedDrafts}
@@ -1179,7 +1318,7 @@ export default function Home() {
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search company, email, contact, subject…"
+                    placeholder="Search company, email, contact…"
                     aria-label="Search drafts"
                   />
                   <label className="checkbox tight">
@@ -1197,7 +1336,7 @@ export default function Home() {
                     aria-label="Filter drafts"
                   >
                     <option value="all">All statuses</option>
-                    <option value="unsent">Unsent</option>
+                    <option value="unsent">Ready to send</option>
                     <option value="draft">Draft</option>
                     <option value="sent">Sent</option>
                     <option value="skipped">Skipped</option>
@@ -1218,7 +1357,16 @@ export default function Home() {
               {filteredDrafts.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">∅</div>
-                  <p>{searchQuery.trim() || statusFilter !== "all" ? "No drafts match your search" : "No drafts found"}</p>
+                  <p>
+                    {searchQuery.trim() || statusFilter !== "all"
+                      ? "No drafts match your search"
+                      : "No drafts yet — finish Find people first"}
+                  </p>
+                  {!draftsReady ? (
+                    <button type="button" className="btn-secondary" style={{ marginTop: 12 }} onClick={() => setCurrentPage("leads")}>
+                      Go to Find people
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <>
@@ -1416,7 +1564,7 @@ export default function Home() {
 
                 <div className="draft-block">
                   <h3>Hiring summary</h3>
-                  <p>{detailDraft.hiring_summary || "Not extracted yet. Use Enrich older drafts / Enrich selected."}</p>
+                  <p>{detailDraft.hiring_summary || "Not extracted yet."}</p>
                 </div>
 
                 <div className="draft-block">
@@ -1440,7 +1588,7 @@ export default function Home() {
 
                 <details className="job-post">
                   <summary>Original job post</summary>
-                  <pre>{detailDraft.job_post || "Original post not stored for this draft. Enrich or regenerate to capture it."}</pre>
+                  <pre>{detailDraft.job_post || "Original post not stored for this draft."}</pre>
                 </details>
 
                 <div className="draft-block notes-section">
@@ -1507,6 +1655,29 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {status ? (
+        <div
+          className={`app-toast app-toast-${toastKind || "success"}`}
+          role="status"
+          aria-live="polite"
+        >
+          {busy ? <span className="toast-spinner" aria-hidden /> : null}
+          {!busy && toastKind === "success" ? <span className="toast-icon" aria-hidden>✓</span> : null}
+          {!busy && toastKind === "error" ? <span className="toast-icon" aria-hidden>!</span> : null}
+          <span className="toast-message">{status}</span>
+          {!busy ? (
+            <button
+              type="button"
+              className="toast-dismiss"
+              aria-label="Dismiss"
+              onClick={() => showStatus("")}
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
