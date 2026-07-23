@@ -92,12 +92,24 @@ export function Hero() {
           </motion.div>
 
           <motion.p
-            className="mt-4 text-xs leading-relaxed tracking-wide text-text-muted/90 sm:mt-5"
+            className="mt-4 text-sm text-text-muted sm:mt-5"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.5 }}
+          >
+            Already have an account?{" "}
+            <a href="/login" className="font-medium text-text-primary underline-offset-2 hover:underline" data-cursor="hover">
+              Sign in
+            </a>
+          </motion.p>
+
+          <motion.p
+            className="mt-3 text-xs leading-relaxed tracking-wide text-text-muted/90"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.55 }}
           >
-            Free to start · Your SMTP, your inbox · You handle replies
+            Free to start · Your email, your inbox · You handle replies
           </motion.p>
         </div>
 

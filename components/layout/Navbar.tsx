@@ -52,8 +52,8 @@ export function Navbar() {
         </nav>
 
         <div className="hidden items-center gap-2 md:flex">
-          <Button href="/contact" variant="ghost">
-            Contact
+          <Button href="/login" variant="ghost">
+            Sign in
           </Button>
           <Button href="/signup" variant="magnetic">
             Start free
@@ -90,8 +90,8 @@ export function Navbar() {
                 </Link>
               ))}
               <div className="mt-2 flex w-full flex-col gap-2">
-                <Button href="/contact" variant="ghost" className="w-full">
-                  Contact
+                <Button href="/login" variant="ghost" className="w-full">
+                  Sign in
                 </Button>
                 <Button href="/signup" className="w-full">
                   Start free

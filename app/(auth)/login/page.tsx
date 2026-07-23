@@ -1,16 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get("error") === "auth_callback") {
+      setError("That sign-in link expired or was invalid. Please sign in again.");
+    }
+  }, [searchParams]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -32,11 +39,13 @@ export default function LoginPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
-        <p className="eyebrow" style={{ marginBottom: 10 }}>ReachPod</p>
-        <h1>Sign in</h1>
-        <p className="subtitle">Access your LinkedIn outreach workspace.</p>
-        <p className="hint" style={{ marginTop: 8 }}>
-          <a href="/">← Back to ReachPod</a>
+        <Link href="/" className="auth-brand">
+          ReachPod
+        </Link>
+        <h1>Welcome back</h1>
+        <p className="subtitle">Sign in to continue your outreach.</p>
+        <p className="auth-switch auth-switch-top">
+          New here? <Link href="/signup">Create a free account</Link>
         </p>
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Email</label>
@@ -64,9 +73,20 @@ export default function LoginPage() {
         </form>
         {error ? <p className="hint error">{error}</p> : null}
         <p className="auth-switch">
-          No account? <Link href="/signup">Create one</Link>
+          Don&apos;t have an account? <Link href="/signup">Create one — it&apos;s free</Link>
+        </p>
+        <p className="auth-back">
+          <Link href="/">← Back to ReachPod</Link>
         </p>
       </section>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="auth-page"><section className="card auth-card"><p>Loading…</p></section></main>}>
+      <LoginForm />
+    </Suspense>
   );
 }
