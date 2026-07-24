@@ -800,12 +800,13 @@ export default function Home() {
       if (options.all) {
         let guard = 0;
         let remaining = Math.max(1, count);
+        let prevRemaining = Infinity;
         while (remaining > 0 && guard < 500) {
           guard += 1;
           showStatus(
             `Sending emails… ${sentTotal} sent` +
               (skippedTotal ? ` · ${skippedTotal} skipped` : "") +
-              (remaining ? ` · ~${remaining} left` : "")
+              (remaining ? ` · ${remaining} left` : "")
           );
           const response = await fetch("/api/send", {
             method: "POST",
@@ -821,20 +822,25 @@ export default function Home() {
             showStatus(data.error || "Send failed.");
             return;
           }
-          sentTotal += Number(data.sent) || 0;
-          skippedTotal += Number(data.skipped) || 0;
-          limitedTotal += Number(data.limited) || 0;
-          failedTotal += Number(data.failed) || 0;
+          const batchSent = Number(data.sent) || 0;
+          const batchSkipped = Number(data.skipped) || 0;
+          const batchLimited = Number(data.limited) || 0;
+          const batchFailed = Number(data.failed) || 0;
+          sentTotal += batchSent;
+          skippedTotal += batchSkipped;
+          limitedTotal += batchLimited;
+          failedTotal += batchFailed;
           if (data.attached_resume) attachedResume = true;
           applyBatchResults(data.results, data.quota);
           remaining = Number(data.remaining) || 0;
-          if (data.done || (!(Number(data.sent) || 0) && !(Number(data.skipped) || 0) && !(Number(data.failed) || 0) && !remaining)) {
-            break;
-          }
-          if (limitedTotal && remaining > 0 && !(Number(data.sent) || 0)) {
+          if (data.done) break;
+          if (batchLimited && remaining > 0 && !batchSent) {
             // Daily quota exhausted — stop looping.
             break;
           }
+          // No forward progress (same remaining, nothing sent) — avoid infinite loops.
+          if (!batchSent && remaining >= prevRemaining) break;
+          prevRemaining = remaining;
         }
       } else {
         const ids =

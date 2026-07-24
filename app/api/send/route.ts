@@ -112,46 +112,63 @@ export async function POST(request: Request) {
     const repliedEmails = await repliedEmailSet(user.id);
     const sentThisRun = new Set<string>();
 
-    const work = drafts.slice(0, batchLimit);
-    const remainingAfterSelect = Math.max(0, drafts.length - work.length);
-
-    let sent = 0;
-    let skipped = 0;
-    let limited = 0;
-    const errors: Array<{ id: number; error: string }> = [];
-    const skippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
-    const results: Array<{ id: number; status: string; email?: string; error?: string }> = [];
-    let remainingSends = sendQuota.remaining;
-
-    for (const draft of work) {
+    // Drop permanently unblockable rows before batching so `remaining` matches sendable drafts
+    // and Send-all cannot spin on the same skipped/replied/missing-email rows.
+    const eligible: typeof drafts = [];
+    const preSkipped: Array<{ id: number; status: string; email?: string; error?: string }> = [];
+    const preSkippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
+    for (const draft of drafts) {
       const email = normalizeEmail(draft.recipientEmail);
       if (!email) {
-        skipped += 1;
-        skippedDrafts.push({ id: draft.id, email: draft.recipientEmail, reason: "Missing recipient email." });
-        results.push({ id: draft.id, status: "skipped", email: draft.recipientEmail });
+        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
+        preSkippedDrafts.push({ id: draft.id, email: draft.recipientEmail, reason: "Missing recipient email." });
+        preSkipped.push({ id: draft.id, status: "skipped", email: draft.recipientEmail });
         continue;
       }
-
       if (draft.replied || repliedEmails.has(email)) {
-        skipped += 1;
-        skippedDrafts.push({
+        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
+        preSkippedDrafts.push({
           id: draft.id,
           email,
           reason: "Recipient marked as replied — automation blocked."
         });
-        results.push({ id: draft.id, status: "skipped", email });
+        preSkipped.push({ id: draft.id, status: "skipped", email });
         continue;
       }
-
-      if (alreadyToday.has(email) || sentThisRun.has(email) || (await wasEmailedToday(user.id, email, day))) {
-        skipped += 1;
-        skippedDrafts.push({
+      if (alreadyToday.has(email) || (await wasEmailedToday(user.id, email, day))) {
+        alreadyToday.add(email);
+        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
+        preSkippedDrafts.push({
           id: draft.id,
           email,
           reason: "Already emailed this address today."
         });
+        preSkipped.push({ id: draft.id, status: "skipped", email });
+        continue;
+      }
+      eligible.push(draft);
+    }
+
+    const work = eligible.slice(0, batchLimit);
+    const remainingAfterSelect = Math.max(0, eligible.length - work.length);
+
+    let sent = 0;
+    let skipped = preSkipped.length;
+    let limited = 0;
+    const errors: Array<{ id: number; error: string }> = [];
+    const skippedDrafts = [...preSkippedDrafts];
+    const results: Array<{ id: number; status: string; email?: string; error?: string }> = [...preSkipped];
+    let remainingSends = sendQuota.remaining;
+
+    for (const draft of work) {
+      const email = normalizeEmail(draft.recipientEmail);
+      // Eligible was pre-filtered; only in-batch duplicate emails should hit this.
+      if (!email || alreadyToday.has(email) || sentThisRun.has(email)) {
+        skipped += 1;
+        const reason = !email ? "Missing recipient email." : "Already emailed this address today.";
+        skippedDrafts.push({ id: draft.id, email: email || draft.recipientEmail, reason });
         if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
-        results.push({ id: draft.id, status: "skipped", email });
+        results.push({ id: draft.id, status: "skipped", email: email || draft.recipientEmail });
         continue;
       }
 

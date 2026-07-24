@@ -859,6 +859,8 @@ export async function getDraftsForSend(
 ) {
   const db = getDb();
   if (options.all) {
+    // Match dashboard "ready to send": not sent, not skipped, not replied.
+    // Including skipped caused Send-all to reprocess the same rows forever (0 sent, rising skipped).
     return db
       .select({
         id: emailDrafts.id,
@@ -869,7 +871,14 @@ export async function getDraftsForSend(
         replied: emailDrafts.replied
       })
       .from(emailDrafts)
-      .where(and(eq(emailDrafts.userId, userId), ne(emailDrafts.status, "sent"), eq(emailDrafts.replied, false)))
+      .where(
+        and(
+          eq(emailDrafts.userId, userId),
+          ne(emailDrafts.status, "sent"),
+          ne(emailDrafts.status, "skipped"),
+          eq(emailDrafts.replied, false)
+        )
+      )
       .orderBy(emailDrafts.id);
   }
   if (options.draftIds?.length) {
