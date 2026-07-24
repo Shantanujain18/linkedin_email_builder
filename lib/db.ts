@@ -424,7 +424,8 @@ export async function wasEmailMarkedReplied(userId: string, email: string) {
   return Boolean(rows.length);
 }
 
-/** Mark unreplied drafts as replied when that recipient was replied on any earlier draft. */
+/** Mark unreplied drafts as replied when that recipient was replied on any earlier draft.
+ * Not used on /api/status — insertDraft already sets replied from history. */
 export async function syncDraftsRepliedFromHistory(userId: string) {
   const repliedEmails = await repliedEmailSet(userId);
   if (!repliedEmails.size) return 0;
@@ -440,10 +441,14 @@ export async function syncDraftsRepliedFromHistory(userId: string) {
   if (!ids.length) return 0;
 
   const timestamp = now();
-  await getDb()
-    .update(emailDrafts)
-    .set({ replied: true, repliedAt: timestamp, updatedAt: timestamp })
-    .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.id, ids)));
+  // Chunk updates if many ids (rare).
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    await getDb()
+      .update(emailDrafts)
+      .set({ replied: true, repliedAt: timestamp, updatedAt: timestamp })
+      .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.id, chunk)));
+  }
   return ids.length;
 }
 
@@ -576,15 +581,44 @@ export async function getProfile(userId: string) {
 }
 
 export async function getPublicProfile(userId: string) {
-  const row = await getProfile(userId);
+  // Avoid selecting resume_text (can be huge) on every dashboard load.
+  const [row] = await getDb()
+    .select({
+      userId: profiles.userId,
+      name: profiles.name,
+      yoe: profiles.yoe,
+      topSkills: profiles.topSkills,
+      currentRole: profiles.currentRole,
+      resumeLink: profiles.resumeLink,
+      phone: profiles.phone,
+      email: profiles.email,
+      resumeFilename: profiles.resumeFilename,
+      resumeMime: profiles.resumeMime,
+      resumePath: profiles.resumePath,
+      immediateJoiner: profiles.immediateJoiner,
+      updatedAt: profiles.updatedAt,
+      hasResumeText: sql<boolean>`length(trim(coalesce(${profiles.resumeText}, ''))) > 0`
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
   if (!row) return null;
-  const hasContent = Boolean(String(row.resume_text || "").trim() || row.resume_path);
-  if (!hasContent) return null;
-  const { resume_text: _t, resume_path: path, ...rest } = row;
+  const hasFile = Boolean(row.resumePath);
+  if (!row.hasResumeText && !hasFile) return null;
   return {
-    ...rest,
-    immediate_joiner: Number(row.immediate_joiner) === 1,
-    has_resume_file: Boolean(path)
+    user_id: row.userId,
+    name: row.name,
+    yoe: row.yoe,
+    top_skills: row.topSkills,
+    current_role: row.currentRole,
+    resume_link: row.resumeLink,
+    phone: row.phone,
+    email: row.email,
+    resume_filename: row.resumeFilename,
+    resume_mime: row.resumeMime,
+    immediate_joiner: Boolean(row.immediateJoiner),
+    updated_at: row.updatedAt,
+    has_resume_file: hasFile
   };
 }
 
@@ -657,9 +691,42 @@ export async function upsertProfileFromResume(
     });
 }
 
+/** Full posts (including long content). Prefer getPostsForDashboard for status. */
 export async function getPosts(userId: string) {
   const rows = await getDb()
     .select()
+    .from(linkedinPosts)
+    .where(eq(linkedinPosts.userId, userId))
+    .orderBy(desc(linkedinPosts.id));
+  return rows.map((row) => ({
+    id: row.id,
+    posted_by: row.postedBy,
+    posted_by_url: row.postedByUrl,
+    posted_date: row.postedDate,
+    posted_content: row.postedContent,
+    post_url: row.postUrl,
+    emails_json: row.emailsJson,
+    draft_skip_reason: row.draftSkipReason || "",
+    created_at: row.createdAt
+  }));
+}
+
+/** Dashboard list: truncate post bodies so /api/status payload stays small. */
+const POST_CONTENT_LIST_CHARS = 3500;
+
+export async function getPostsForDashboard(userId: string) {
+  const rows = await getDb()
+    .select({
+      id: linkedinPosts.id,
+      postedBy: linkedinPosts.postedBy,
+      postedByUrl: linkedinPosts.postedByUrl,
+      postedDate: linkedinPosts.postedDate,
+      postedContent: sql<string>`left(${linkedinPosts.postedContent}, ${POST_CONTENT_LIST_CHARS})`,
+      postUrl: linkedinPosts.postUrl,
+      emailsJson: linkedinPosts.emailsJson,
+      draftSkipReason: linkedinPosts.draftSkipReason,
+      createdAt: linkedinPosts.createdAt
+    })
     .from(linkedinPosts)
     .where(eq(linkedinPosts.userId, userId))
     .orderBy(desc(linkedinPosts.id));
@@ -822,24 +889,42 @@ export async function userOwnsDraft(userId: string, draftId: number) {
 }
 
 export async function listDrafts(userId: string) {
-  await syncDraftsRepliedFromHistory(userId);
-
+  // Hot path: no syncDraftsRepliedFromHistory — insertDraft already sets replied from history.
   const rows = await getDb()
-    .select()
+    .select({
+      id: emailDrafts.id,
+      recipientEmail: emailDrafts.recipientEmail,
+      recipientName: emailDrafts.recipientName,
+      subject: emailDrafts.subject,
+      bodyPreview: sql<string>`left(${emailDrafts.body}, 600)`,
+      status: emailDrafts.status,
+      phone: emailDrafts.phone,
+      location: emailDrafts.location,
+      company: emailDrafts.company,
+      contactName: emailDrafts.contactName,
+      matchedSkills: emailDrafts.matchedSkills,
+      called: emailDrafts.called,
+      calledAt: emailDrafts.calledAt,
+      replied: emailDrafts.replied,
+      repliedAt: emailDrafts.repliedAt,
+      postId: emailDrafts.postId,
+      createdAt: emailDrafts.createdAt,
+      updatedAt: emailDrafts.updatedAt
+    })
     .from(emailDrafts)
     .where(eq(emailDrafts.userId, userId))
     .orderBy(desc(emailDrafts.id));
 
-  const ids = rows.map((row) => row.id);
   const sentAtByDraft = new Map<number, string>();
-  if (ids.length) {
+  if (rows.length) {
+    // Filter by userId only — avoids huge inArray(...) with every draft id.
     const logs = await getDb()
       .select({
         draftId: emailSendLog.draftId,
         sentAt: emailSendLog.sentAt
       })
       .from(emailSendLog)
-      .where(and(eq(emailSendLog.userId, userId), inArray(emailSendLog.draftId, ids)));
+      .where(and(eq(emailSendLog.userId, userId), sql`${emailSendLog.draftId} is not null`));
     for (const log of logs) {
       if (!log.draftId) continue;
       const prev = sentAtByDraft.get(log.draftId);
@@ -847,10 +932,52 @@ export async function listDrafts(userId: string) {
     }
   }
 
-  return rows.map((row) => ({
-    ...mapDraftRow(row),
-    sent_at: sentAtByDraft.get(row.id) || (row.status === "sent" ? row.updatedAt : "")
-  }));
+  return rows.map((row) => {
+    const preview = row.bodyPreview || "";
+    return {
+      id: row.id,
+      recipient_email: row.recipientEmail,
+      recipient_name: row.recipientName,
+      subject: row.subject,
+      // List preview only — full body loaded via GET /api/drafts?id=
+      body: preview.length >= 600 ? `${preview}…` : preview,
+      status: row.status,
+      phone: row.phone,
+      location: row.location,
+      company: row.company,
+      contact_name: row.contactName,
+      // Heavy fields omitted from list; loaded on detail open.
+      hiring_summary: "",
+      talking_points: "",
+      job_post: "",
+      matched_skills: row.matchedSkills,
+      called: row.called,
+      called_at: row.calledAt,
+      replied: row.replied,
+      replied_at: row.repliedAt,
+      post_id: row.postId,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+      sent_at: sentAtByDraft.get(row.id) || (row.status === "sent" ? row.updatedAt : "")
+    };
+  });
+}
+
+export async function getDraftDetail(userId: string, draftId: number) {
+  const draft = await getDraftById(userId, draftId);
+  if (!draft) return null;
+  const notes = await getNotesForDraft(draftId);
+  const logs = await getDb()
+    .select({ sentAt: emailSendLog.sentAt })
+    .from(emailSendLog)
+    .where(and(eq(emailSendLog.userId, userId), eq(emailSendLog.draftId, draftId)))
+    .orderBy(desc(emailSendLog.sentAt))
+    .limit(1);
+  return {
+    ...draft,
+    sent_at: logs[0]?.sentAt || (draft.status === "sent" ? draft.updated_at : ""),
+    notes
+  };
 }
 
 export async function getDraftsForSend(
