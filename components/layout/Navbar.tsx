@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Menu, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { NAV_LINKS, SITE } from "@/lib/constants";
+import { NAV_LINKS } from "@/lib/constants";
+import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 
@@ -29,13 +30,11 @@ export function Navbar() {
       )}
     >
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-        <Link
-          href="/"
-          className="font-display text-lg font-extrabold tracking-tight gradient-text no-underline"
-          data-cursor="hover"
-        >
-          {SITE.name}
-        </Link>
+        <Logo
+          size={28}
+          priority
+          wordmarkClassName="font-display text-lg font-extrabold tracking-tight gradient-text"
+        />
 
         <nav className="hidden items-center gap-8 md:flex">
           {NAV_LINKS.map((link) => (

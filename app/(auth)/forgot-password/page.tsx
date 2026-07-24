@@ -33,9 +33,10 @@ export default function ForgotPasswordPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
-        <p className="eyebrow" style={{ marginBottom: 10 }}>
-          ReachPod
-        </p>
+        <Link href="/" className="auth-brand">
+          <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+          <span className="auth-brand-name">ReachPod</span>
+        </Link>
         <h1>Forgot password</h1>
         <p className="subtitle">
           Enter your account email and we&apos;ll send a link to set a new password.
