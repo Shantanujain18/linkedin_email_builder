@@ -6,6 +6,13 @@ export const SITE = {
   url: "https://reachpod.app"
 } as const;
 
+/** Chrome extension install package (Load unpacked from unzipped folder). */
+export const EXTENSION = {
+  required_version: "2.2.0",
+  download_url: "https://github.com/Shantanujain18/linkedin_post_scrapper/raw/main/dist.zip",
+  github_page: "https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
+} as const;
+
 export const NAV_LINKS = [
   { label: "How it Works", href: "/#how-it-works" },
   { label: "Tool vs Service", href: "/#comparison" },

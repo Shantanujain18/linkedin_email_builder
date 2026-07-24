@@ -26,10 +26,14 @@ const TECH_LEXICON: Array<{ label: string; aliases: string[] }> = [
   { label: "MongoDB", aliases: ["mongodb", "mongo"] },
   { label: "DevOps", aliases: ["devops", "kubernetes", "docker", "ci/cd"] },
   { label: "ML", aliases: ["machine learning", "ml engineer", "deep learning"] },
-  { label: "AI", aliases: ["ai engineer", "generative ai"] }
+  { label: "AI", aliases: ["ai engineer", "generative ai"] },
+  { label: "Firmware", aliases: ["firmware", "firmware engineer", "embedded firmware"] },
+  { label: "Embedded", aliases: ["embedded", "embedded systems", "embedded software"] },
+  { label: "Hardware", aliases: ["hardware engineer", "hardware design", "pcb", "vlsi", "ece"] }
 ];
 
 const EXCLUSIVE_FRONTENDS = new Set(["Angular", "React", "Vue"]);
+const HARDWARE_STACK = new Set(["Firmware", "Embedded", "Hardware"]);
 
 export function parseSkills(raw: string): string[] {
   return String(raw || "")
@@ -99,6 +103,19 @@ export function evaluateSkillFit(topSkills: string, postContent: string): SkillF
       postTechs,
       missingExclusive,
       reason: `Post requires ${postExclusive.join("/")}, which is not in your skills.`
+    };
+  }
+
+  const postHardware = postTechs.filter((tech) => HARDWARE_STACK.has(tech));
+  const ownsHardware = postHardware.some((tech) => candidateOwnsTech(candidateSkills, tech));
+  if (postHardware.length > 0 && !ownsHardware) {
+    return {
+      ok: false,
+      score: 0,
+      matchedSkills,
+      postTechs,
+      missingExclusive,
+      reason: `Post is ${postHardware.join("/")} focused, which is not in your skills.`
     };
   }
 

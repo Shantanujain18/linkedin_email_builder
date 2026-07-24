@@ -17,6 +17,12 @@ import { sendMail } from "@/lib/mail";
 import { downloadResume } from "@/lib/storage";
 
 export const runtime = "nodejs";
+/** Best-effort; Hobby still caps lower. Client batches keep each request short. */
+export const maxDuration = 60;
+
+/** Keep small so one request fits Vercel free/Hobby timeouts (~10s). */
+const DEFAULT_BATCH = 2;
+const MAX_BATCH = 5;
 
 export async function POST(request: Request) {
   try {
@@ -38,6 +44,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Provide draftId, draftIds, or set all=true." }, { status: 400 });
     }
 
+    const batchLimit = Math.max(
+      1,
+      Math.min(MAX_BATCH, Math.floor(Number(body.limit) || DEFAULT_BATCH))
+    );
+
     const attachResume =
       body.attach_resume === undefined ? smtp.attach_resume : Boolean(body.attach_resume);
 
@@ -49,8 +60,17 @@ export async function POST(request: Request) {
 
     if (!drafts.length) {
       return NextResponse.json(
-        { error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied." },
-        { status: 404 }
+        {
+          error: sendAll ? "No unsent drafts to send." : "Draft not found or marked as replied.",
+          sent: 0,
+          skipped: 0,
+          limited: 0,
+          failed: 0,
+          remaining: 0,
+          done: true,
+          results: []
+        },
+        { status: sendAll ? 200 : 404 }
       );
     }
 
@@ -59,7 +79,9 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error: `Daily email send limit reached (${sendQuota.daily_post_limit}/day on the ${sendQuota.plan} plan).`,
-          quota: sendQuota
+          quota: sendQuota,
+          remaining: drafts.length,
+          done: false
         },
         { status: 429 }
       );
@@ -90,18 +112,23 @@ export async function POST(request: Request) {
     const repliedEmails = await repliedEmailSet(user.id);
     const sentThisRun = new Set<string>();
 
+    const work = drafts.slice(0, batchLimit);
+    const remainingAfterSelect = Math.max(0, drafts.length - work.length);
+
     let sent = 0;
     let skipped = 0;
     let limited = 0;
     const errors: Array<{ id: number; error: string }> = [];
     const skippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
+    const results: Array<{ id: number; status: string; email?: string; error?: string }> = [];
     let remainingSends = sendQuota.remaining;
 
-    for (const draft of drafts) {
+    for (const draft of work) {
       const email = normalizeEmail(draft.recipientEmail);
       if (!email) {
         skipped += 1;
         skippedDrafts.push({ id: draft.id, email: draft.recipientEmail, reason: "Missing recipient email." });
+        results.push({ id: draft.id, status: "skipped", email: draft.recipientEmail });
         continue;
       }
 
@@ -112,6 +139,7 @@ export async function POST(request: Request) {
           email,
           reason: "Recipient marked as replied — automation blocked."
         });
+        results.push({ id: draft.id, status: "skipped", email });
         continue;
       }
 
@@ -123,6 +151,7 @@ export async function POST(request: Request) {
           reason: "Already emailed this address today."
         });
         if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
+        results.push({ id: draft.id, status: "skipped", email });
         continue;
       }
 
@@ -133,6 +162,7 @@ export async function POST(request: Request) {
           email,
           reason: `Daily send limit reached (${sendQuota.daily_post_limit}/day).`
         });
+        results.push({ id: draft.id, status: "limited", email });
         continue;
       }
 
@@ -150,14 +180,19 @@ export async function POST(request: Request) {
         sentThisRun.add(email);
         sent += 1;
         remainingSends -= 1;
+        results.push({ id: draft.id, status: "sent", email });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Send failed.";
         await updateDraftStatus(user.id, draft.id, "failed");
         errors.push({ id: draft.id, error: message });
+        results.push({ id: draft.id, status: "failed", email, error: message });
       }
     }
 
     const quotaAfter = await getSendQuota(user.id);
+    // If we hit the daily limit mid-batch, remaining unsent in this selection still need another run
+    // only if quota recovers — but drafts not in `work` are still remaining.
+    const remaining = remainingAfterSelect + limited;
 
     return NextResponse.json({
       sent,
@@ -166,9 +201,13 @@ export async function POST(request: Request) {
       failed: errors.length,
       errors,
       skipped_drafts: skippedDrafts,
+      results,
       attached_resume: Boolean(attachment),
       quota: quotaAfter,
-      day
+      day,
+      remaining,
+      done: remaining === 0,
+      batch_size: work.length
     });
   } catch (error) {
     return NextResponse.json(
