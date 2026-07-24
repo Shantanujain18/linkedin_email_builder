@@ -82,9 +82,10 @@ export default function ResetPasswordPage() {
     return (
       <main className="auth-page">
         <section className="card auth-card">
-          <p className="eyebrow" style={{ marginBottom: 10 }}>
-            ReachPod
-          </p>
+          <Link href="/" className="auth-brand">
+            <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+            <span className="auth-brand-name">ReachPod</span>
+          </Link>
           <h1>Link expired</h1>
           <p className="subtitle">
             This reset link is invalid or has expired. Request a new one and try again.
@@ -100,9 +101,10 @@ export default function ResetPasswordPage() {
   return (
     <main className="auth-page">
       <section className="card auth-card">
-        <p className="eyebrow" style={{ marginBottom: 10 }}>
-          ReachPod
-        </p>
+        <Link href="/" className="auth-brand">
+          <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+          <span className="auth-brand-name">ReachPod</span>
+        </Link>
         <h1>Set new password</h1>
         <p className="subtitle">Choose a new password for your account.</p>
         <form onSubmit={onSubmit}>

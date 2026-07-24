@@ -40,7 +40,8 @@ function LoginForm() {
     <main className="auth-page">
       <section className="card auth-card">
         <Link href="/" className="auth-brand">
-          ReachPod
+          <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+          <span className="auth-brand-name">ReachPod</span>
         </Link>
         <h1>Welcome back</h1>
         <p className="subtitle">Sign in to continue your outreach.</p>

@@ -1075,7 +1075,7 @@ export default function Home() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="sidebar-logo">RP</div>
+          <img className="sidebar-logo" src="/brand/reachpod-logo.png" alt="" width={28} height={28} />
           <div>
             <h1>ReachPod</h1>
             <span>LinkedIn outreach</span>

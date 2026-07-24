@@ -45,7 +45,8 @@ export default function SignupPage() {
       <main className="auth-page">
         <section className="card auth-card">
           <Link href="/" className="auth-brand">
-            ReachPod
+            <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+            <span className="auth-brand-name">ReachPod</span>
           </Link>
           <h1>Check your email</h1>
           <p className="subtitle">
@@ -69,7 +70,8 @@ export default function SignupPage() {
     <main className="auth-page">
       <section className="card auth-card">
         <Link href="/" className="auth-brand">
-          ReachPod
+          <img src="/brand/reachpod-logo.png" alt="" width={48} height={48} />
+          <span className="auth-brand-name">ReachPod</span>
         </Link>
         <h1>Create your free account</h1>
         <p className="subtitle">Upload your resume, find people to email, and send — in a few simple steps.</p>

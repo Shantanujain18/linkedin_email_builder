@@ -48,11 +48,18 @@ export function Hero() {
         {/* Left panel */}
         <div className="relative z-10 w-full max-w-xl lg:pr-4">
           <motion.p
-            className="font-display text-[clamp(2.4rem,11vw,4.5rem)] font-extrabold leading-[0.92] tracking-tight"
+            className="flex items-center gap-3 font-display text-[clamp(2.4rem,11vw,4.5rem)] font-extrabold leading-[0.92] tracking-tight sm:gap-4"
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
           >
+            <img
+              src="/brand/reachpod-logo.png"
+              alt=""
+              width={72}
+              height={72}
+              className="h-[0.82em] w-[0.82em] shrink-0 rounded-[18%]"
+            />
             <span className="gradient-text">{SITE.name}</span>
           </motion.p>
 

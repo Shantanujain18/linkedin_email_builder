@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { FOOTER_LINKS, SITE } from "@/lib/constants";
+import { Logo } from "@/components/brand/Logo";
 
 function SocialIcon({
   href,
@@ -29,9 +30,11 @@ export function Footer() {
     <footer className="border-t border-white/10 bg-surface">
       <div className="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:gap-10 sm:px-6 sm:py-14 md:grid-cols-4">
         <div className="md:col-span-2">
-          <div className="font-display text-xl font-extrabold gradient-text">
-            {SITE.name}
-          </div>
+          <Logo
+            href={false}
+            size={32}
+            wordmarkClassName="font-display text-xl font-extrabold gradient-text"
+          />
           <p className="mt-3 max-w-sm text-sm text-text-muted">{SITE.tagline}</p>
           <div className="mt-5 flex gap-3">
             <SocialIcon href="https://x.com" label="Twitter / X">

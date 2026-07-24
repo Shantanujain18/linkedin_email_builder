@@ -3,7 +3,8 @@ export const SITE = {
   tagline: "We get you in the door.",
   description:
     "AI-powered job outreach that scrapes LinkedIn recruiter posts, writes personalized cold emails, and helps you get noticed at scale.",
-  url: "https://reachpod.app"
+  url: "https://reachpod.app",
+  logo: "/brand/reachpod-logo.png"
 } as const;
 
 /** Chrome extension install package (Load unpacked from unzipped folder). */
