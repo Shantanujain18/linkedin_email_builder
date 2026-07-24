@@ -407,6 +407,46 @@ export async function repliedEmailSet(userId: string) {
   return new Set(rows.map((row) => normalizeEmail(row.email)).filter(Boolean));
 }
 
+export async function wasEmailMarkedReplied(userId: string, email: string) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  const rows = await getDb()
+    .select({ id: emailDrafts.id })
+    .from(emailDrafts)
+    .where(
+      and(
+        eq(emailDrafts.userId, userId),
+        eq(emailDrafts.replied, true),
+        sql`lower(trim(${emailDrafts.recipientEmail})) = ${normalized}`
+      )
+    )
+    .limit(1);
+  return Boolean(rows.length);
+}
+
+/** Mark unreplied drafts as replied when that recipient was replied on any earlier draft. */
+export async function syncDraftsRepliedFromHistory(userId: string) {
+  const repliedEmails = await repliedEmailSet(userId);
+  if (!repliedEmails.size) return 0;
+
+  const unreplied = await getDb()
+    .select({ id: emailDrafts.id, recipientEmail: emailDrafts.recipientEmail })
+    .from(emailDrafts)
+    .where(and(eq(emailDrafts.userId, userId), eq(emailDrafts.replied, false)));
+
+  const ids = unreplied
+    .filter((row) => repliedEmails.has(normalizeEmail(row.recipientEmail)))
+    .map((row) => row.id);
+  if (!ids.length) return 0;
+
+  const timestamp = now();
+  await getDb()
+    .update(emailDrafts)
+    .set({ replied: true, repliedAt: timestamp, updatedAt: timestamp })
+    .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.id, ids)));
+  return ids.length;
+}
+
 export async function setDraftReplied(userId: string, draftId: number, replied: boolean) {
   const db = getDb();
   const [draft] = await db
@@ -465,7 +505,9 @@ function mapDraftRow(draft: typeof emailDrafts.$inferSelect) {
     called_at: draft.calledAt,
     replied: draft.replied,
     replied_at: draft.repliedAt,
-    post_id: draft.postId
+    post_id: draft.postId,
+    created_at: draft.createdAt,
+    updated_at: draft.updatedAt
   };
 }
 
@@ -629,8 +671,23 @@ export async function getPosts(userId: string) {
     posted_content: row.postedContent,
     post_url: row.postUrl,
     emails_json: row.emailsJson,
+    draft_skip_reason: row.draftSkipReason || "",
     created_at: row.createdAt
   }));
+}
+
+export async function setPostDraftSkipReason(userId: string, postId: number, reason: string) {
+  await getDb()
+    .update(linkedinPosts)
+    .set({ draftSkipReason: String(reason || "").trim().slice(0, 500) })
+    .where(and(eq(linkedinPosts.userId, userId), eq(linkedinPosts.id, postId)));
+}
+
+export async function clearPostDraftSkipReason(userId: string, postId: number) {
+  await getDb()
+    .update(linkedinPosts)
+    .set({ draftSkipReason: "" })
+    .where(and(eq(linkedinPosts.userId, userId), eq(linkedinPosts.id, postId)));
 }
 
 export async function clearDrafts(userId: string) {
@@ -765,12 +822,35 @@ export async function userOwnsDraft(userId: string, draftId: number) {
 }
 
 export async function listDrafts(userId: string) {
+  await syncDraftsRepliedFromHistory(userId);
+
   const rows = await getDb()
     .select()
     .from(emailDrafts)
     .where(eq(emailDrafts.userId, userId))
     .orderBy(desc(emailDrafts.id));
-  return rows.map(mapDraftRow);
+
+  const ids = rows.map((row) => row.id);
+  const sentAtByDraft = new Map<number, string>();
+  if (ids.length) {
+    const logs = await getDb()
+      .select({
+        draftId: emailSendLog.draftId,
+        sentAt: emailSendLog.sentAt
+      })
+      .from(emailSendLog)
+      .where(and(eq(emailSendLog.userId, userId), inArray(emailSendLog.draftId, ids)));
+    for (const log of logs) {
+      if (!log.draftId) continue;
+      const prev = sentAtByDraft.get(log.draftId);
+      if (!prev || log.sentAt > prev) sentAtByDraft.set(log.draftId, log.sentAt);
+    }
+  }
+
+  return rows.map((row) => ({
+    ...mapDraftRow(row),
+    sent_at: sentAtByDraft.get(row.id) || (row.status === "sent" ? row.updatedAt : "")
+  }));
 }
 
 export async function getDraftsForSend(
@@ -908,6 +988,7 @@ export async function insertDraft(
   }
 ) {
   const timestamp = now();
+  const alreadyReplied = await wasEmailMarkedReplied(userId, values.recipientEmail);
   await getDb().insert(emailDrafts).values({
     userId,
     postId: values.postId,
@@ -925,11 +1006,12 @@ export async function insertDraft(
     matchedSkills: values.matchedSkills,
     called: false,
     calledAt: "",
-    replied: false,
-    repliedAt: "",
+    replied: alreadyReplied,
+    repliedAt: alreadyReplied ? timestamp : "",
     createdAt: timestamp,
     updatedAt: timestamp
   });
+  await clearPostDraftSkipReason(userId, values.postId);
 }
 
 export async function getDraftsForEnrich(

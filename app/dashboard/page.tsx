@@ -2,6 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EXTENSION } from "@/lib/constants";
+import { evaluateSkillFit } from "@/lib/skills";
 
 type DraftNote = {
   id: number;
@@ -12,6 +14,7 @@ type DraftNote = {
 
 type Draft = {
   id: number;
+  post_id?: number;
   recipient_email: string;
   recipient_name: string;
   subject: string;
@@ -29,6 +32,8 @@ type Draft = {
   called_at?: string;
   replied?: boolean;
   replied_at?: string;
+  created_at?: string;
+  sent_at?: string;
   notes?: DraftNote[];
 };
 
@@ -74,8 +79,36 @@ type Stats = {
 };
 
 type PageId = "profile" | "leads" | "send";
-type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped";
+type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped" | "replied";
 type PageSize = 25 | 50 | 100;
+type PostFilter = "all" | "valid" | "invalid" | "drafted" | "skipped" | "pending";
+
+function postDraftStatus(
+  post: Record<string, string | number>,
+  draftedPostIds: Set<number>,
+  topSkills: string
+) {
+  if (draftedPostIds.has(Number(post.id))) {
+    return { kind: "drafted" as const, label: "Drafted", reason: "" };
+  }
+  const emails = parsePostEmails(post.emails_json);
+  if (!emails.length) {
+    return { kind: "none" as const, label: "—", reason: "No email in post" };
+  }
+  const storedSkip = String(post.draft_skip_reason || "").trim();
+  if (storedSkip) {
+    return { kind: "skipped" as const, label: "Skipped", reason: storedSkip };
+  }
+  const fit = evaluateSkillFit(topSkills, String(post.posted_content || ""));
+  if (!fit.ok) {
+    return { kind: "skipped" as const, label: "Skipped", reason: fit.reason };
+  }
+  return {
+    kind: "pending" as const,
+    label: "Pending",
+    reason: "Skill match OK — use Write email on this row, or Write pending emails for all."
+  };
+}
 
 const PAGES: Array<{ id: PageId; label: string; step: number }> = [
   { id: "profile", label: "Your profile", step: 1 },
@@ -110,12 +143,42 @@ function initials(name: string, email: string) {
   return source.slice(0, 2).toUpperCase();
 }
 
-function statusBadge(status: string) {
+function statusBadge(status: string, replied?: boolean) {
+  if (replied) return <span className="badge replied">Replied</span>;
   if (status === "sent") return <span className="badge sent">Sent</span>;
   if (status === "skipped") return <span className="badge skipped">Skipped</span>;
   if (status === "failed") return <span className="badge failed">Failed</span>;
   if (status === "draft") return <span className="badge draft">Draft</span>;
   return <span className="badge applied">{status}</span>;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function parsePostEmails(emailsJson: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(emailsJson || "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((email) => String(email || "").trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function truncateText(value: string, max = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= max) return text || "—";
+  return `${text.slice(0, max - 1)}…`;
 }
 
 function QuotaMeter({
@@ -269,6 +332,10 @@ export default function Home() {
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [postFilter, setPostFilter] = useState<PostFilter>("all");
+  const [postSearch, setPostSearch] = useState("");
+  const [postPage, setPostPage] = useState(1);
+  const [postPageSize, setPostPageSize] = useState<PageSize>(25);
   const emailSetupInit = useRef(false);
 
   async function refresh() {
@@ -314,6 +381,11 @@ export default function Home() {
   }
   useEffect(() => { refresh().catch(() => { setAuthReady(true); router.replace("/login"); }); }, []);
 
+  useEffect(() => {
+    const page = new URLSearchParams(window.location.search).get("page");
+    if (page === "profile" || page === "leads" || page === "send") setCurrentPage(page);
+  }, []);
+
   async function signOut() {
     setBusy(true);
     try {
@@ -337,6 +409,7 @@ export default function Home() {
   }, [detailId]);
 
   useEffect(() => { setPage(1); }, [statusFilter, pageSize, searchQuery]);
+  useEffect(() => { setPostPage(1); }, [postFilter, postPageSize, postSearch]);
 
   function showStatus(message: string) {
     if (statusTimer.current) {
@@ -437,18 +510,68 @@ export default function Home() {
     refresh();
   }
 
-  async function generate() {
-    setBusy(true); showStatus("Writing personalized emails… Please wait.");
-    const response = await fetch("/api/drafts", { method: "POST" });
-    const data = await response.json(); setBusy(false);
-    if (!response.ok) {
-      showStatus(data.error || "Draft generation failed.");
-      return;
+  async function generate(postIds?: number[]) {
+    const ids = (postIds || []).filter((id) => Number.isFinite(id) && id > 0);
+    setBusy(true);
+    let createdTotal = 0;
+    let skippedTotal = 0;
+    let lastSkipReason = "";
+
+    try {
+      if (ids.length) {
+        const queue = [...ids];
+        while (queue.length) {
+          const chunkIds = queue.splice(0, 20);
+          showStatus(`Writing emails… ${createdTotal} created · ${queue.length} left in queue`);
+          const response = await fetch("/api/drafts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ postIds: chunkIds })
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            showStatus(data.error || "Draft generation failed.");
+            return;
+          }
+          createdTotal += Number(data.created) || 0;
+          skippedTotal += Number(data.skipped) || 0;
+          const reasons = Array.isArray(data.skip_reasons) ? data.skip_reasons : [];
+          if (reasons[0]?.reason) lastSkipReason = String(reasons[0].reason);
+        }
+      } else {
+        let guard = 0;
+        let remaining = 1;
+        while (remaining > 0 && guard < 50) {
+          guard += 1;
+          showStatus(`Writing emails… ${createdTotal} created · ${skippedTotal} skipped`);
+          const response = await fetch("/api/drafts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({})
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            showStatus(data.error || "Draft generation failed.");
+            return;
+          }
+          createdTotal += Number(data.created) || 0;
+          skippedTotal += Number(data.skipped) || 0;
+          remaining = Number(data.remaining) || 0;
+          if (!(Number(data.pending) > 0)) break;
+        }
+      }
+
+      if (ids.length === 1 && !createdTotal && skippedTotal) {
+        showStatus(lastSkipReason || "No draft created — marked as skipped (no skill match).");
+      } else {
+        const parts = [`Created ${createdTotal} draft${createdTotal === 1 ? "" : "s"}`];
+        if (skippedTotal) parts.push(`${skippedTotal} skipped`);
+        showStatus(parts.join(" · ") + ".");
+      }
+      await refresh();
+    } finally {
+      setBusy(false);
     }
-    const parts = [`Created ${data.created || 0} drafts`];
-    if (data.skipped) parts.push(`${data.skipped} skipped (weak/no skill match)`);
-    showStatus(parts.join(" · ") + ".");
-    refresh();
   }
 
   async function clearAllDrafts() {
@@ -628,33 +751,226 @@ export default function Home() {
         : "this draft";
     const withResume = bulkAttachResume ? " with resume attached" : " without resume";
     if (!window.confirm(`Send ${label}${withResume}?`)) return;
+
+    // Small batches so each request stays under Vercel Hobby timeouts (~10s).
+    const BATCH = 2;
     setBusy(true);
-    showStatus(count === 1 ? "Sending email…" : `Sending ${count} emails… Please wait.`);
-    const response = await fetch("/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...options,
-        attach_resume: bulkAttachResume
-      })
-    });
-    const data = await response.json(); setBusy(false);
-    if (!response.ok) {
-      showStatus(data.error || "Send failed.");
-      return;
+
+    let sentTotal = 0;
+    let skippedTotal = 0;
+    let limitedTotal = 0;
+    let failedTotal = 0;
+    let attachedResume = false;
+    let lastQuota = stats.quota?.send || null;
+
+    const applyBatchResults = (
+      results: Array<{ id: number; status: string }> | undefined,
+      quota: DailyQuota | undefined
+    ) => {
+      if (quota) {
+        lastQuota = quota;
+        setStats((prev) =>
+          prev.quota
+            ? { ...prev, quota: { ...prev.quota, send: quota } }
+            : prev
+        );
+      }
+      if (!results?.length) return;
+      const byId = new Map(results.map((row) => [row.id, row.status]));
+      const sentAt = new Date().toISOString();
+      setStats((prev) => ({
+        ...prev,
+        drafts: prev.drafts.map((draft) => {
+          const status = byId.get(draft.id);
+          if (!status || status === "limited") return draft;
+          return {
+            ...draft,
+            status: status === "sent" || status === "skipped" || status === "failed" ? status : draft.status,
+            sent_at: status === "sent" ? sentAt : draft.sent_at
+          };
+        })
+      }));
+      setSelectedIds((prev) => prev.filter((id) => {
+        const status = byId.get(id);
+        return !status || status === "limited";
+      }));
+    };
+
+    try {
+      if (options.all) {
+        let guard = 0;
+        let remaining = Math.max(1, count);
+        while (remaining > 0 && guard < 500) {
+          guard += 1;
+          showStatus(
+            `Sending emails… ${sentTotal} sent` +
+              (skippedTotal ? ` · ${skippedTotal} skipped` : "") +
+              (remaining ? ` · ~${remaining} left` : "")
+          );
+          const response = await fetch("/api/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              all: true,
+              limit: BATCH,
+              attach_resume: bulkAttachResume
+            })
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            showStatus(data.error || "Send failed.");
+            return;
+          }
+          sentTotal += Number(data.sent) || 0;
+          skippedTotal += Number(data.skipped) || 0;
+          limitedTotal += Number(data.limited) || 0;
+          failedTotal += Number(data.failed) || 0;
+          if (data.attached_resume) attachedResume = true;
+          applyBatchResults(data.results, data.quota);
+          remaining = Number(data.remaining) || 0;
+          if (data.done || (!(Number(data.sent) || 0) && !(Number(data.skipped) || 0) && !(Number(data.failed) || 0) && !remaining)) {
+            break;
+          }
+          if (limitedTotal && remaining > 0 && !(Number(data.sent) || 0)) {
+            // Daily quota exhausted — stop looping.
+            break;
+          }
+        }
+      } else {
+        const ids =
+          options.draftIds?.length
+            ? [...options.draftIds]
+            : options.draftId
+              ? [options.draftId]
+              : [];
+        const queue = [...ids];
+        const total = queue.length;
+        while (queue.length) {
+          const chunk = queue.splice(0, BATCH);
+          showStatus(`Sending emails… ${sentTotal}/${total} sent · ${queue.length} left`);
+          const response = await fetch("/api/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              draftIds: chunk,
+              limit: chunk.length,
+              attach_resume: bulkAttachResume
+            })
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            showStatus(data.error || "Send failed.");
+            return;
+          }
+          sentTotal += Number(data.sent) || 0;
+          skippedTotal += Number(data.skipped) || 0;
+          limitedTotal += Number(data.limited) || 0;
+          failedTotal += Number(data.failed) || 0;
+          if (data.attached_resume) attachedResume = true;
+          applyBatchResults(data.results, data.quota);
+          if (limitedTotal && !(Number(data.sent) || 0)) break;
+        }
+      }
+
+      const parts = [`Sent ${sentTotal}`];
+      if (skippedTotal) parts.push(`${skippedTotal} skipped`);
+      if (limitedTotal) parts.push(`${limitedTotal} held (daily send limit)`);
+      if (failedTotal) parts.push(`${failedTotal} failed`);
+      if (attachedResume) parts.push("resume attached");
+      if (lastQuota) parts.push(`${lastQuota.remaining} sends left today`);
+      showStatus(parts.join(" · ") + ".");
+    } finally {
+      setBusy(false);
     }
-    const parts = [`Sent ${data.sent || 0}`];
-    if (data.skipped) parts.push(`${data.skipped} skipped (already emailed today)`);
-    if (data.limited) parts.push(`${data.limited} held (daily send limit)`);
-    if (data.failed) parts.push(`${data.failed} failed`);
-    if (data.attached_resume) parts.push("resume attached");
-    if (data.quota) parts.push(`${data.quota.remaining} sends left today`);
-    showStatus(parts.join(" · ") + ".");
-    setSelectedIds([]);
-    refresh();
   }
 
-  const postsWithEmail = stats.posts.filter((post) => String(post.emails_json || "[]") !== "[]").length;
+  const postsWithEmail = stats.posts.filter((post) => parsePostEmails(post.emails_json).length > 0).length;
+  const postsWithoutEmail = Math.max(0, stats.posts.length - postsWithEmail);
+  const draftedPostIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const draft of stats.drafts) {
+      const postId = Number(draft.post_id);
+      if (Number.isFinite(postId) && postId > 0) ids.add(postId);
+    }
+    return ids;
+  }, [stats.drafts]);
+  const postsDrafted = stats.posts.filter((post) => draftedPostIds.has(Number(post.id))).length;
+  const topSkills = String(stats.profile?.top_skills || "");
+  const postOutcomes = useMemo(() => {
+    const map = new Map<number, ReturnType<typeof postDraftStatus>>();
+    for (const post of stats.posts) {
+      map.set(Number(post.id), postDraftStatus(post, draftedPostIds, topSkills));
+    }
+    return map;
+  }, [stats.posts, draftedPostIds, topSkills]);
+  const postsSkipped = [...postOutcomes.values()].filter((item) => item.kind === "skipped").length;
+  const postsPendingDraft = [...postOutcomes.values()].filter((item) => item.kind === "pending").length;
+  const pendingPostIds = useMemo(
+    () =>
+      stats.posts
+        .filter((post) => postOutcomes.get(Number(post.id))?.kind === "pending")
+        .map((post) => Number(post.id)),
+    [stats.posts, postOutcomes]
+  );
+
+  async function generatePending() {
+    if (!pendingPostIds.length) {
+      showStatus("No pending posts to draft.");
+      return;
+    }
+    await generate(pendingPostIds);
+  }
+
+  async function generateOne(postId: number) {
+    await generate([postId]);
+  }
+
+  const filteredPosts = useMemo(() => {
+    const q = postSearch.trim().toLowerCase();
+    return stats.posts.filter((post) => {
+      const emails = parsePostEmails(post.emails_json);
+      const valid = emails.length > 0;
+      const outcome = postOutcomes.get(Number(post.id));
+      if (postFilter === "valid" && !valid) return false;
+      if (postFilter === "invalid" && valid) return false;
+      if (postFilter === "drafted" && outcome?.kind !== "drafted") return false;
+      if (postFilter === "skipped" && outcome?.kind !== "skipped") return false;
+      if (postFilter === "pending" && outcome?.kind !== "pending") return false;
+      if (!q) return true;
+      const haystack = [
+        post.posted_by,
+        post.posted_content,
+        post.posted_by_url,
+        post.post_url,
+        emails.join(" "),
+        outcome?.label,
+        outcome?.reason
+      ]
+        .map((value) => String(value || "").toLowerCase())
+        .join(" ");
+      return haystack.includes(q);
+    });
+  }, [stats.posts, postOutcomes, postFilter, postSearch]);
+
+  const postTotalPages = Math.max(1, Math.ceil(filteredPosts.length / postPageSize));
+  const safePostPage = Math.min(postPage, postTotalPages);
+  const postPageStart = filteredPosts.length === 0 ? 0 : (safePostPage - 1) * postPageSize + 1;
+  const postPageEnd = Math.min(safePostPage * postPageSize, filteredPosts.length);
+  const pagePosts = filteredPosts.slice((safePostPage - 1) * postPageSize, safePostPage * postPageSize);
+
+  useEffect(() => {
+    if (postPage > postTotalPages) setPostPage(postTotalPages);
+  }, [postPage, postTotalPages]);
+
+  const postFilterOptions: Array<{ id: PostFilter; label: string; count: number }> = [
+    { id: "all", label: "All", count: stats.posts.length },
+    { id: "valid", label: "Valid", count: postsWithEmail },
+    { id: "invalid", label: "Invalid", count: postsWithoutEmail },
+    { id: "pending", label: "Pending", count: postsPendingDraft },
+    { id: "drafted", label: "Drafted", count: postsDrafted },
+    { id: "skipped", label: "Skipped", count: postsSkipped }
+  ];
+
   const unsentCount = stats.drafts.filter(isUnsent).length;
   const sentCount = stats.drafts.filter((draft) => draft.status === "sent").length;
   const importRemaining = stats.quota?.import?.remaining ?? null;
@@ -674,9 +990,10 @@ export default function Home() {
     const q = searchQuery.trim().toLowerCase();
     return stats.drafts.filter((draft) => {
       if (statusFilter === "unsent" && !isUnsent(draft)) return false;
-      if (statusFilter === "draft" && draft.status !== "draft") return false;
+      if (statusFilter === "draft" && (draft.status !== "draft" || draft.replied)) return false;
       if (statusFilter === "sent" && draft.status !== "sent") return false;
       if (statusFilter === "skipped" && draft.status !== "skipped") return false;
+      if (statusFilter === "replied" && !draft.replied) return false;
       if (!q) return true;
       const contact = `${draft.contact_name || ""} ${draft.recipient_name || ""}`.toLowerCase();
       return (
@@ -811,7 +1128,7 @@ export default function Home() {
       </aside>
 
       <div className="main-area">
-        <div className={`main-inner${currentPage === "send" ? " fluid" : ""}`}>
+        <div className={`main-inner${currentPage === "send" || currentPage === "leads" ? " fluid" : ""}`}>
           <div className="top-user-bar">
             <div className="top-user">
               <div className="avatar">{initials(user.name, user.email)}</div>
@@ -822,6 +1139,20 @@ export default function Home() {
               <a className="upgrade-btn upgrade-btn-top" href={upgradeHref}>Upgrade</a>
               <button type="button" className="btn-ghost-sm" disabled={busy} onClick={signOut}>Sign out</button>
             </div>
+          </div>
+
+          <div className="extension-update-banner" role="status">
+            <p>
+              Chrome extension <strong>v{EXTENSION.required_version}</strong> is required — scrape now saves posts and drafts emails automatically.
+            </p>
+            <a
+              className="btn-secondary btn-compact"
+              href={EXTENSION.download_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Download latest extension
+            </a>
           </div>
 
           {currentPage === "profile" && (
@@ -916,8 +1247,8 @@ export default function Home() {
                 title="Step 2 · Find people"
                 subtitle={
                   importRemaining == null
-                    ? "Collect LinkedIn hiring posts, then write skill-matched emails."
-                    : `Collect LinkedIn hiring posts, then write emails. Today: ${importUsed}/${dailyLimit} imported · ${importRemaining} left.`
+                    ? "Use the Chrome extension to scrape LinkedIn — posts and drafts are prepared automatically."
+                    : `Use the Chrome extension to scrape LinkedIn. Manual CSV import today: ${importUsed}/${dailyLimit} · ${importRemaining} left.`
                 }
               />
 
@@ -935,30 +1266,30 @@ export default function Home() {
                   <li className={leadsImported ? "done" : "current"}>
                     <span className="substep-num">A</span>
                     <div>
-                      <strong>Get leads from LinkedIn</strong>
-                      <p className="hint">Install the free Chrome extension, export posts, then upload the file here.</p>
+                      <strong>Scrape with the Chrome extension</strong>
+                      <p className="hint">Sign in to the extension, search LinkedIn, and it saves posts and writes drafts for you.</p>
                     </div>
                   </li>
                   <li className={draftsReady ? "done" : leadsImported ? "current" : ""}>
                     <span className="substep-num">B</span>
                     <div>
-                      <strong>Write personalized emails</strong>
-                      <p className="hint">We’ll draft emails only when your skills match the job.</p>
+                      <strong>Review drafts here</strong>
+                      <p className="hint">When the extension finishes, open Send emails to review and send. Manual tools below are optional.</p>
                     </div>
                   </li>
                 </ol>
 
                 <div className="extension-guide">
-                  <h3 className="extension-guide-title">How to get your leads file</h3>
+                  <h3 className="extension-guide-title">How to use the Chrome extension</h3>
                   <ol className="extension-steps">
                     <li>
                       Download{" "}
                       <a
-                        href="https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
+                        href={EXTENSION.download_url}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
-                        the Chrome extension
+                        the Chrome extension (v{EXTENSION.required_version})
                       </a>{" "}
                       and unzip it.
                     </li>
@@ -980,75 +1311,296 @@ export default function Home() {
                       <strong>Load unpacked</strong>, and select the unzipped folder.
                     </li>
                     <li>
-                      On LinkedIn, use the extension to search and export posts — then upload that file below.
+                      On LinkedIn, open the extension, click <strong>Search and prepare emails</strong>, wait for drafts, then return here to send.
                     </li>
                   </ol>
                 </div>
 
-                <form onSubmit={importCsv}>
-                  <FileDropzone
-                    id="linkedin-csv"
-                    name="csv"
-                    accept=".csv,text/csv"
-                    required
-                    label="Drop your leads file here, or click to browse"
-                    hint="CSV exported from the Chrome extension · emails are detected automatically"
-                    fileName={csvFileName}
-                    onFile={(file) => setCsvFileName(file?.name || "")}
-                  />
-                  <div className="actions-row">
-                    <button type="submit" disabled={busy || importRemaining === 0 || !profileReady}>
-                      Import leads
-                    </button>
-                  </div>
-                  {!profileReady ? (
-                    <p className="hint" style={{ marginTop: 10 }}>
-                      Finish Step 1 (Your profile) before importing.
-                    </p>
-                  ) : null}
-                  {importRemaining === 0 ? (
-                    <p className="hint" style={{ marginTop: 10 }}>
-                      You’ve reached today’s import limit ({dailyLimit}/day). Try again tomorrow, or contact us to raise your plan limit.
-                    </p>
-                  ) : null}
-                </form>
+                <details className="optional-import">
+                  <summary>Optional: import a CSV manually</summary>
+                  <form onSubmit={importCsv} style={{ marginTop: 12 }}>
+                    <FileDropzone
+                      id="linkedin-csv"
+                      name="csv"
+                      accept=".csv,text/csv"
+                      required
+                      label="Drop a leads CSV here, or click to browse"
+                      hint="Fallback if you already have a CSV · emails are detected automatically"
+                      fileName={csvFileName}
+                      onFile={(file) => setCsvFileName(file?.name || "")}
+                    />
+                    <div className="actions-row">
+                      <button type="submit" disabled={busy || importRemaining === 0 || !profileReady}>
+                        Import leads
+                      </button>
+                    </div>
+                    {!profileReady ? (
+                      <p className="hint" style={{ marginTop: 10 }}>
+                        Finish Step 1 (Your profile) before importing.
+                      </p>
+                    ) : null}
+                    {importRemaining === 0 ? (
+                      <p className="hint" style={{ marginTop: 10 }}>
+                        You’ve reached today’s import limit ({dailyLimit}/day). Try again tomorrow, or contact us to raise your plan limit.
+                      </p>
+                    ) : null}
+                  </form>
+                </details>
 
                 <div className="stat-chips">
                   <div className="stat-chip">
                     <span className="val">{stats.posts.length}</span>
-                    <span className="lbl">Leads imported</span>
+                    <span className="lbl">Scraped</span>
                   </div>
                   <div className="stat-chip">
                     <span className="val">{postsWithEmail}</span>
-                    <span className="lbl">With email</span>
+                    <span className="lbl">Valid (has email)</span>
                   </div>
                   <div className="stat-chip">
-                    <span className="val">{stats.drafts.length}</span>
-                    <span className="lbl">Email drafts</span>
+                    <span className="val">{postsWithoutEmail}</span>
+                    <span className="lbl">Invalid (no email)</span>
+                  </div>
+                  <div className="stat-chip">
+                    <span className="val">{postsDrafted}</span>
+                    <span className="lbl">Emails drafted</span>
+                  </div>
+                  <div className="stat-chip">
+                    <span className="val">{postsSkipped}</span>
+                    <span className="lbl">Skipped (skills)</span>
+                  </div>
+                  <div className="stat-chip">
+                    <span className="val">{postsPendingDraft}</span>
+                    <span className="lbl">Pending drafts</span>
                   </div>
                 </div>
               </div>
 
               {leadsImported ? (
+                <div className="card leads-posts-panel" style={{ marginTop: 16 }}>
+                  <div className="leads-posts-header">
+                    <div>
+                      <h3 className="section-title" style={{ marginBottom: 4 }}>Scraped posts</h3>
+                      <p className="hint" style={{ margin: 0 }}>
+                        Valid = email found · Skipped = skills don’t fit · Pending = match OK — write the email now
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-compact"
+                      disabled={busy || !profileReady || !postsPendingDraft}
+                      onClick={generatePending}
+                    >
+                      Write pending emails
+                      {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
+                    </button>
+                  </div>
+
+                  <div className="leads-posts-toolbar">
+                    <div className="post-filter-chips" role="tablist" aria-label="Filter scraped posts">
+                      {postFilterOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={postFilter === option.id}
+                          className={`post-filter-chip${postFilter === option.id ? " active" : ""}`}
+                          onClick={() => setPostFilter(option.id)}
+                        >
+                          <span>{option.label}</span>
+                          <strong>{option.count}</strong>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="leads-posts-toolbar-right">
+                      <input
+                        className="toolbar-search leads-posts-search"
+                        type="search"
+                        value={postSearch}
+                        onChange={(e) => setPostSearch(e.target.value)}
+                        placeholder="Search author, email, content…"
+                        aria-label="Search scraped posts"
+                      />
+                      <select
+                        className="toolbar-select"
+                        value={postPageSize}
+                        onChange={(e) => setPostPageSize(Number(e.target.value) as PageSize)}
+                        aria-label="Rows per page"
+                      >
+                        <option value={25}>25 / page</option>
+                        <option value={50}>50 / page</option>
+                        <option value={100}>100 / page</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {filteredPosts.length === 0 ? (
+                    <div className="info-note" style={{ marginTop: 12 }}>
+                      {postSearch.trim() || postFilter !== "all"
+                        ? "No posts match your search or filter."
+                        : "No scraped posts yet."}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-wrap leads-posts-wrap" style={{ marginTop: 12 }}>
+                        <table className="draft-table leads-posts-table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 160 }}>Author</th>
+                              <th style={{ width: 140 }}>Scraped</th>
+                              <th style={{ width: 110 }}>Posted</th>
+                              <th>Snippet</th>
+                              <th style={{ width: 200 }}>Emails</th>
+                              <th style={{ width: 90 }}>Class</th>
+                              <th style={{ width: 100 }}>Draft</th>
+                              <th style={{ width: 120 }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagePosts.map((post) => {
+                              const emails = parsePostEmails(post.emails_json);
+                              const valid = emails.length > 0;
+                              const outcome = postOutcomes.get(Number(post.id)) || {
+                                kind: "none" as const,
+                                label: "—",
+                                reason: ""
+                              };
+                              const author = String(post.posted_by || "Unknown");
+                              const snippet = truncateText(String(post.posted_content || ""), 180);
+                              const authorUrl = String(post.posted_by_url || "");
+                              const postUrl = String(post.post_url || "");
+                              return (
+                                <tr key={Number(post.id)}>
+                                  <td className="col-contact" title={author}>
+                                    {authorUrl ? (
+                                      <a href={authorUrl} target="_blank" rel="noopener noreferrer" className="table-link">
+                                        {author}
+                                      </a>
+                                    ) : (
+                                      author
+                                    )}
+                                  </td>
+                                  <td className="col-datetime" title={String(post.created_at || "")}>
+                                    {formatDateTime(String(post.created_at || ""))}
+                                  </td>
+                                  <td className="col-datetime" title={String(post.posted_date || "")}>
+                                    {String(post.posted_date || "—")}
+                                  </td>
+                                  <td className="col-snippet" title={String(post.posted_content || "")}>
+                                    {postUrl ? (
+                                      <a href={postUrl} target="_blank" rel="noopener noreferrer" className="table-link">
+                                        {snippet}
+                                      </a>
+                                    ) : (
+                                      snippet
+                                    )}
+                                  </td>
+                                  <td className="col-email" title={emails.join(", ") || undefined}>
+                                    {emails.length ? emails.join(", ") : "—"}
+                                  </td>
+                                  <td>
+                                    {valid ? (
+                                      <span className="badge draft">Valid</span>
+                                    ) : (
+                                      <span className="badge failed">Invalid</span>
+                                    )}
+                                  </td>
+                                  <td title={outcome.reason || undefined}>
+                                    {outcome.kind === "drafted" ? (
+                                      <span className="badge sent">Drafted</span>
+                                    ) : outcome.kind === "skipped" ? (
+                                      <span className="badge failed">Skipped</span>
+                                    ) : outcome.kind === "pending" ? (
+                                      <span className="badge skipped">Pending</span>
+                                    ) : (
+                                      <span className="badge skipped">—</span>
+                                    )}
+                                  </td>
+                                  <td className="actions-cell">
+                                    {outcome.kind === "pending" || outcome.kind === "skipped" ? (
+                                      <button
+                                        type="button"
+                                        className="link-btn"
+                                        disabled={busy || !profileReady}
+                                        onClick={() => generateOne(Number(post.id))}
+                                      >
+                                        {outcome.kind === "skipped" ? "Retry write" : "Write email"}
+                                      </button>
+                                    ) : null}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="pagination">
+                        <span className="pagination-meta">
+                          Showing {postPageStart}–{postPageEnd} of {filteredPosts.length} posts
+                        </span>
+                        <div className="pagination-controls">
+                          <button
+                            type="button"
+                            className="page-btn"
+                            disabled={safePostPage <= 1}
+                            onClick={() => setPostPage((current) => Math.max(1, current - 1))}
+                          >
+                            ‹ Prev
+                          </button>
+                          <span className="page-pill current">
+                            {safePostPage} / {postTotalPages}
+                          </span>
+                          <button
+                            type="button"
+                            className="page-btn"
+                            disabled={safePostPage >= postTotalPages}
+                            onClick={() => setPostPage((current) => Math.min(postTotalPages, current + 1))}
+                          >
+                            Next ›
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : null}
+
+              {leadsImported ? (
                 <div className="card" style={{ marginTop: 16 }}>
                   <h3 className="section-title">Write personalized emails</h3>
                   <p className="hint" style={{ marginTop: 0 }}>
-                    Creates drafts only when your skills match the job post. You can review and edit before sending.
+                    Prefer the buttons on pending rows above. This writes drafts for all remaining undrafted posts (in batches).
                   </p>
                   <div className="actions-row">
-                    <button onClick={generate} disabled={busy || !stats.profile || !stats.posts.length} type="button">
-                      Write my emails
+                    <button
+                      onClick={() => generate()}
+                      disabled={busy || !stats.profile || !stats.posts.length}
+                      type="button"
+                    >
+                      Write all remaining emails
+                    </button>
+                    <button
+                      onClick={generatePending}
+                      disabled={busy || !profileReady || !postsPendingDraft}
+                      type="button"
+                      className="btn-secondary"
+                    >
+                      Write pending only
+                      {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
                     </button>
                     <a href="/api/export" download>
                       <button className="btn-secondary" type="button">Download drafts</button>
                     </a>
                   </div>
-                  {!draftsReady ? (
-                    <div className="info-note">After importing, click <strong>Write my emails</strong> to create drafts.</div>
+                  {postsPendingDraft ? (
+                    <div className="info-note">
+                      {postsPendingDraft} pending post{postsPendingDraft === 1 ? "" : "s"} ready to draft.
+                    </div>
+                  ) : !draftsReady ? (
+                    <div className="info-note">After leads are saved, drafts appear here — or write emails from pending rows above.</div>
                   ) : null}
                 </div>
               ) : (
-                <div className="info-note">Import leads above to unlock email writing.</div>
+                <div className="info-note">Run the Chrome extension on LinkedIn (or import a CSV) to unlock email writing.</div>
               )}
 
               {draftsReady ? (
@@ -1339,6 +1891,7 @@ export default function Home() {
                     <option value="unsent">Ready to send</option>
                     <option value="draft">Draft</option>
                     <option value="sent">Sent</option>
+                    <option value="replied">Replied</option>
                     <option value="skipped">Skipped</option>
                   </select>
                   <select
@@ -1391,6 +1944,8 @@ export default function Home() {
                           <th style={{ width: 180 }}>Subject</th>
                           <th>Body</th>
                           <th style={{ width: 80 }}>Status</th>
+                          <th style={{ width: 130 }}>Created</th>
+                          <th style={{ width: 130 }}>Sent</th>
                           <th style={{ width: 64 }}>Called</th>
                           <th style={{ width: 72 }}>Replied</th>
                           <th style={{ width: 72 }}></th>
@@ -1419,7 +1974,13 @@ export default function Home() {
                               <td className="col-email" title={draft.recipient_email}>{draft.recipient_email}</td>
                               <td className="col-subject" title={draft.subject}>{draft.subject}</td>
                               <td className="col-body">{draft.body || "—"}</td>
-                              <td>{statusBadge(draft.status)}</td>
+                              <td>{statusBadge(draft.status, draft.replied)}</td>
+                              <td className="col-datetime" title={draft.created_at || undefined}>
+                                {formatDateTime(draft.created_at)}
+                              </td>
+                              <td className="col-datetime" title={draft.sent_at || undefined}>
+                                {formatDateTime(draft.sent_at)}
+                              </td>
                               <td>
                                 <input
                                   type="checkbox"
@@ -1492,8 +2053,7 @@ export default function Home() {
           >
             <header className="draft-card-head">
               <h3>Draft details</h3>
-              {statusBadge(detailDraft.status)}
-              {detailDraft.replied && <span className="badge replied">Replied</span>}
+              {statusBadge(detailDraft.status, detailDraft.replied)}
               <label className="checkbox tight">
                 <input
                   type="checkbox"
@@ -1560,6 +2120,14 @@ export default function Home() {
                   <div><span className="meta-label">Mobile</span><strong>{detailDraft.phone || "—"}</strong></div>
                   <div><span className="meta-label">Email</span><strong>{detailDraft.recipient_email}</strong></div>
                   <div><span className="meta-label">Matched skills</span><strong>{detailDraft.matched_skills || "—"}</strong></div>
+                  <div>
+                    <span className="meta-label">Created</span>
+                    <strong>{formatDateTime(detailDraft.created_at)}</strong>
+                  </div>
+                  <div>
+                    <span className="meta-label">Sent</span>
+                    <strong>{formatDateTime(detailDraft.sent_at)}</strong>
+                  </div>
                 </div>
 
                 <div className="draft-block">

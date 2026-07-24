@@ -78,10 +78,23 @@ function compactProfile(profile: CandidateProfile) {
   };
 }
 
-function draftSystemPrompt(batch: boolean) {
+function draftSystemPrompt(batch: boolean, forceWrite = false) {
   const shape = batch
     ? `Return only JSON: {"drafts":[...one object per input key...]}. Each object is either {"key":"...","skip":true,"reason":"..."} OR {"key":"...","skip":false,"matched_skills":["..."],"phone":"...","location":"...","company":"...","contact_name":"...","hiring_summary":"...","talking_points":["...","..."],"subject":"...","body":"..."}.`
     : `Return only JSON that is either {"skip":true,"reason":"..."} OR {"skip":false,"matched_skills":["..."],"phone":"...","location":"...","company":"...","contact_name":"...","hiring_summary":"...","talking_points":["...","..."],"subject":"...","body":"..."}.`;
+
+  if (forceWrite) {
+    return [
+      "You write concise professional job-application outreach emails (under 140 words) and extract recruiter/job details from the post.",
+      shape,
+      "CRITICAL: The application already verified skill fit. matched_skills in the input are confirmed overlaps.",
+      "You MUST return skip:false with a complete subject and body. Do NOT skip for skills, experience years, notice period, location, or contract type.",
+      "Emphasize ONLY the matched skills. Never invent experience.",
+      "If candidate.immediate_joiner is true, mention immediate joining availability naturally. If false, do not claim it.",
+      "Extraction: phone, location, company, contact_name, hiring_summary, talking_points (3-5 short points as a string array).",
+      `Possible role keywords when relevant: ${ROLE_KEYWORDS.join(", ")}.`
+    ].join(" ");
+  }
 
   return [
     "You write concise professional job-application outreach emails (under 140 words) only when the candidate is a genuine skill fit, and you also extract recruiter/job details from the post.",
@@ -89,19 +102,21 @@ function draftSystemPrompt(batch: boolean) {
     "Skill-fit rules (strict):",
     "1. Read the full job post. Identify the required/primary technologies and role.",
     "2. Compare against candidate.skills. Prefer the strongest overlapping skills.",
-    "3. SKIP if the post centers on a stack the candidate does not have (example: Angular role when candidate skills are React/Python/Django — skip, do not apply).",
-    "4. React is NOT interchangeable with Angular or Vue. Django/Python is NOT interchangeable with Java/.NET unless the post clearly wants Python too.",
-    "5. Never write 'although I do not have X' or offer to learn a missing primary stack. If primary stack is missing, skip.",
-    "6. When fit is true, emphasize ONLY matched skills and relevant experience. Do not list unrelated skills as if they qualify for the role.",
-    "7. Never invent experience. Mention a target role title only if the post supports it.",
-    "8. If candidate.immediate_joiner is true, mention immediate joining availability naturally. If false, do not claim it.",
+    "3. If skill_fit_hint.matched_skills is non-empty, treat skill fit as already verified and do NOT skip for skill reasons.",
+    "4. SKIP only if skill_fit_hint.matched_skills is empty AND the post centers on a stack the candidate does not have (example: Angular role when candidate skills are React/Python/Django).",
+    "5. React is NOT interchangeable with Angular or Vue. Django/Python is NOT interchangeable with Java/.NET unless the post clearly wants Python too.",
+    "6. Never write 'although I do not have X' or offer to learn a missing primary stack. If primary stack is missing and matched_skills is empty, skip.",
+    "7. When fit is true, emphasize ONLY matched skills and relevant experience. Do not list unrelated skills as if they qualify for the role.",
+    "8. Never invent experience. Mention a target role title only if the post supports it.",
+    "9. Do not skip solely because years of experience, notice period, or employment type differ.",
+    "10. If candidate.immediate_joiner is true, mention immediate joining availability naturally. If false, do not claim it.",
     "Extraction rules for fit=true drafts:",
-    "9. phone: extract recruiter/mobile numbers from the post (include country code if present). Use empty string if none. Never invent a number.",
-    "10. location: city/remote/hybrid if stated, else empty string.",
-    "11. company: hiring company or agency name if present, else empty string.",
-    "12. contact_name: HR/recruiter/poster name if present (may use recipient), else empty string.",
-    "13. hiring_summary: 1-2 sentence summary of what they are hiring for.",
-    "14. talking_points: 3-5 short call talking points tailored to matched skills and the role (array of strings).",
+    "11. phone: extract recruiter/mobile numbers from the post (include country code if present). Use empty string if none. Never invent a number.",
+    "12. location: city/remote/hybrid if stated, else empty string.",
+    "13. company: hiring company or agency name if present, else empty string.",
+    "14. contact_name: HR/recruiter/poster name if present (may use recipient), else empty string.",
+    "15. hiring_summary: 1-2 sentence summary of what they are hiring for.",
+    "16. talking_points: 3-5 short call talking points tailored to matched skills and the role (array of strings).",
     `Possible role keywords when relevant: ${ROLE_KEYWORDS.join(", ")}.`
   ].join(" ");
 }
@@ -152,7 +167,8 @@ export async function extractCandidateProfile(resumeText: string): Promise<Candi
     messages: [
       {
         role: "system",
-        content: "Extract a candidate profile from a resume. Return only valid JSON with exactly these string keys: name, yoe, top_skills, current_role, resume_link, phone, email. Use empty strings when unknown. top_skills must be a single comma-separated string, never an array. yoe must be a string."
+        content:
+          "Extract a candidate profile from a resume. Return only valid JSON with exactly these string keys: name, yoe, top_skills, current_role, resume_link, phone, email. Use empty strings when unknown. top_skills must be a single comma-separated string, never an array. yoe must be a string."
       },
       { role: "user", content: resumeText.slice(0, 60_000) }
     ]
@@ -160,27 +176,27 @@ export async function extractCandidateProfile(resumeText: string): Promise<Candi
   return toCandidateProfile(jsonFromResponse(response.choices[0]?.message.content));
 }
 
-export async function draftEmail(
+async function requestDraft(
   profile: CandidateProfile,
-  post: { postedBy: string; content: string; email: string }
+  post: { postedBy: string; content: string; email: string },
+  fit: ReturnType<typeof evaluateSkillFit>,
+  forceWrite: boolean
 ): Promise<DraftResult> {
-  const fit = evaluateSkillFit(profile.top_skills, post.content);
-  if (!fit.ok) return { skip: true, reason: fit.reason };
-
   const response = await client().chat.completions.create({
     model: model(),
     temperature: 0.3,
     max_tokens: 900,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: draftSystemPrompt(false) },
+      { role: "system", content: draftSystemPrompt(false, forceWrite) },
       {
         role: "user",
         content: JSON.stringify({
           candidate: compactProfile(profile),
           skill_fit_hint: {
             matched_skills: fit.matchedSkills,
-            post_technologies: fit.postTechs
+            post_technologies: fit.postTechs,
+            verified: true
           },
           recipient: post.postedBy,
           job_post: post.content.slice(0, 4000),
@@ -190,6 +206,21 @@ export async function draftEmail(
     ]
   });
   return toDraftResult(jsonFromResponse(response.choices[0]?.message.content) as Record<string, unknown>);
+}
+
+export async function draftEmail(
+  profile: CandidateProfile,
+  post: { postedBy: string; content: string; email: string }
+): Promise<DraftResult> {
+  const fit = evaluateSkillFit(profile.top_skills, post.content);
+  if (!fit.ok) return { skip: true, reason: fit.reason };
+
+  let result = await requestDraft(profile, post, fit, false);
+  // Local matcher already confirmed overlap — don't let the model falsely veto on "skills".
+  if (result.skip && fit.matchedSkills.length > 0) {
+    result = await requestDraft(profile, post, fit, true);
+  }
+  return result;
 }
 
 /** Generate several personalized drafts in one model call. */
@@ -262,6 +293,13 @@ export async function draftEmailBatch(
   if (missing.length) {
     const fallbacks = await Promise.all(missing.map(async (post) => [post.key, await draftEmail(profile, post)] as const));
     for (const [key, value] of fallbacks) results[key] = value;
+  }
+
+  // Model sometimes falsely skips eligible posts — retry those via draftEmail (force path).
+  const falseSkips = eligible.filter((post) => results[post.key]?.skip);
+  if (falseSkips.length) {
+    const retries = await Promise.all(falseSkips.map(async (post) => [post.key, await draftEmail(profile, post)] as const));
+    for (const [key, value] of retries) results[key] = value;
   }
 
   return results;

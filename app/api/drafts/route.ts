@@ -9,6 +9,7 @@ import {
   getProfile,
   insertDraft,
   setDraftReplied,
+  setPostDraftSkipReason,
   updateDraftCalled,
   updateDraftContent
 } from "@/lib/db";
@@ -113,10 +114,19 @@ function chunk<T>(items: T[], size: number) {
   return out;
 }
 
-export async function POST() {
+/** Cap per request so large pending queues do not hit the HTTP timeout. */
+const MAX_POSTS_PER_REQUEST = 20;
+
+export async function POST(request: Request) {
   try {
     const user = await requireUser();
     if (!isUser(user)) return user;
+
+    const body = (await request.json().catch(() => ({}))) as { postIds?: unknown };
+    const requestedIds = Array.isArray(body.postIds)
+      ? body.postIds.map((value) => Number(value)).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+    const requestedSet = requestedIds.length ? new Set(requestedIds) : null;
 
     const profileRow = await getProfile(user.id);
     if (!profileRow?.resume_text) return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
@@ -140,6 +150,7 @@ export async function POST() {
     const pending: PendingDraft[] = [];
     for (const post of posts) {
       const postId = Number(post.id);
+      if (requestedSet && !requestedSet.has(postId)) continue;
       if (existingPostIds.has(postId)) continue;
       const emails = JSON.parse(String(post.emailsJson || "[]")) as string[];
       const email = emails.find((value) => String(value || "").trim());
@@ -153,9 +164,13 @@ export async function POST() {
       });
     }
 
-    if (!pending.length) return NextResponse.json({ created: 0 });
+    if (!pending.length) {
+      return NextResponse.json({ created: 0, skipped: 0, pending: 0, remaining: 0 });
+    }
 
-    const batches = chunk(pending, BATCH_SIZE);
+    const remaining = Math.max(0, pending.length - MAX_POSTS_PER_REQUEST);
+    const work = pending.slice(0, MAX_POSTS_PER_REQUEST);
+    const batches = chunk(work, BATCH_SIZE);
     let created = 0;
     let skipped = 0;
     const skipReasons: Array<{ postId: number; reason: string }> = [];
@@ -166,11 +181,16 @@ export async function POST() {
         const draft = generated[item.key];
         if (!draft || draft.skip) {
           skipped += 1;
-          skipReasons.push({ postId: item.postId, reason: draft && "reason" in draft ? draft.reason : "Skipped." });
+          const reason = draft && "reason" in draft ? draft.reason : "Skipped.";
+          skipReasons.push({ postId: item.postId, reason });
+          await setPostDraftSkipReason(user.id, item.postId, reason);
           continue;
         }
         if (!draft.subject || !draft.body) {
           skipped += 1;
+          const reason = "Model returned an incomplete draft.";
+          skipReasons.push({ postId: item.postId, reason });
+          await setPostDraftSkipReason(user.id, item.postId, reason);
           continue;
         }
         await insertDraft(user.id, {
@@ -195,7 +215,8 @@ export async function POST() {
     return NextResponse.json({
       created,
       skipped,
-      pending: pending.length,
+      pending: work.length,
+      remaining,
       skip_reasons: skipReasons.slice(0, 20)
     });
   } catch (error) {

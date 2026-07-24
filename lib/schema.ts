@@ -56,6 +56,7 @@ export const linkedinPosts = pgTable(
     postedContent: text("posted_content").notNull().default(""),
     postUrl: text("post_url").notNull().default(""),
     emailsJson: text("emails_json").notNull().default("[]"),
+    draftSkipReason: text("draft_skip_reason").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
   },
   (table) => [
@@ -126,8 +127,8 @@ export const contactSubmissions = pgTable("contact_submissions", {
 
 export const extensionConfig = pgTable("extension_config", {
   id: integer("id").primaryKey().default(1),
-  requiredVersion: text("required_version").notNull().default("2.1.0"),
+  requiredVersion: text("required_version").notNull().default("2.2.0"),
   updateUrl: text("update_url").notNull().default(""),
-  message: text("message").notNull().default("Please install the latest ReachPod extension to continue."),
+  message: text("message").notNull().default("Please install ReachPod extension 2.2.0 to continue."),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()
 });
