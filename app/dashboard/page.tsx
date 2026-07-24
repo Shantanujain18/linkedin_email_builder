@@ -644,10 +644,22 @@ export default function Home() {
     setEditForm({ recipient_email: "", subject: "", body: "" });
   }
 
-  function openDetails(draft: Draft) {
+  async function openDetails(draft: Draft) {
     setDetailId(draft.id);
     setNoteText("");
     cancelEdit();
+    try {
+      const response = await fetch(`/api/drafts?id=${draft.id}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data.draft) return;
+      const full = data.draft as Draft;
+      setStats((prev) => ({
+        ...prev,
+        drafts: prev.drafts.map((row) => (row.id === full.id ? { ...row, ...full } : row))
+      }));
+    } catch {
+      // List row still opens; detail fields may be empty until retry.
+    }
   }
 
   function closeDetails() {
@@ -720,7 +732,18 @@ export default function Home() {
     }
     setNoteText("");
     showStatus("Note added.");
-    refresh();
+    if (data.note) {
+      setStats((prev) => ({
+        ...prev,
+        drafts: prev.drafts.map((draft) =>
+          draft.id === detailId
+            ? { ...draft, notes: [...(draft.notes || []), data.note] }
+            : draft
+        )
+      }));
+    } else {
+      refresh();
+    }
   }
 
   async function removeNote(noteId: number) {
@@ -733,7 +756,16 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     showStatus(data.error || "Note deleted.");
-    if (response.ok) refresh();
+    if (response.ok) {
+      setStats((prev) => ({
+        ...prev,
+        drafts: prev.drafts.map((draft) =>
+          draft.id === detailId
+            ? { ...draft, notes: (draft.notes || []).filter((note) => note.id !== noteId) }
+            : draft
+        )
+      }));
+    }
   }
 
   function toggleSelected(id: number, checked: boolean) {

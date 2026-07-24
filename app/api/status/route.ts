@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { isUser, requireUser } from "@/lib/auth";
 import {
   getAllDailyQuotas,
-  getNotesByDraftIds,
-  getPosts,
+  getPostsForDashboard,
   getPublicProfile,
   getPublicSmtpSettings,
   listDrafts
@@ -15,22 +14,28 @@ export async function GET() {
   const user = await requireUser();
   if (!isUser(user)) return user;
 
-  const rows = await listDrafts(user.id);
-  const notesByDraft = await getNotesByDraftIds(rows.map((row) => Number(row.id)));
+  // Parallelize independent reads — was ~6 sequential round-trips.
+  const [draftRows, profile, posts, smtp, quota] = await Promise.all([
+    listDrafts(user.id),
+    getPublicProfile(user.id),
+    getPostsForDashboard(user.id),
+    getPublicSmtpSettings(user.id),
+    getAllDailyQuotas(user.id)
+  ]);
 
-  const drafts = rows.map((draft) => ({
+  const drafts = draftRows.map((draft) => ({
     ...draft,
     called: Boolean(draft.called),
     replied: Boolean(draft.replied),
-    notes: notesByDraft[Number(draft.id)] || []
+    notes: [] as Array<{ id: number; draft_id: number; note: string; created_at: string }>
   }));
 
   return NextResponse.json({
     user: { id: user.id, email: user.email, name: user.name },
-    profile: await getPublicProfile(user.id),
-    posts: await getPosts(user.id),
+    profile,
+    posts,
     drafts,
-    smtp: await getPublicSmtpSettings(user.id),
-    quota: await getAllDailyQuotas(user.id)
+    smtp,
+    quota
   });
 }

@@ -4,6 +4,7 @@ import {
   clearDrafts,
   deleteDraftsByIds,
   existingDraftPostIds,
+  getDraftDetail,
   getDraftStatus,
   getPostsWithEmails,
   getProfile,
@@ -36,6 +37,26 @@ function mapDraft(draft: Record<string, unknown>) {
     called: Boolean(draft.called),
     replied: Boolean(draft.replied)
   };
+}
+
+export async function GET(request: Request) {
+  try {
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
+    const id = Number(new URL(request.url).searchParams.get("id"));
+    if (!Number.isFinite(id) || id < 1) {
+      return NextResponse.json({ error: "id is required." }, { status: 400 });
+    }
+    const draft = await getDraftDetail(user.id, id);
+    if (!draft) return NextResponse.json({ error: "Draft not found." }, { status: 404 });
+    return NextResponse.json({ draft: mapDraft(draft as unknown as Record<string, unknown>) });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to load draft." },
+      { status: 500 }
+    );
+  }
 }
 
 export async function DELETE(request: Request) {
