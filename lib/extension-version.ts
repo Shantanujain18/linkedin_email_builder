@@ -13,10 +13,10 @@ export type ExtensionConfigRow = {
 };
 
 const DEFAULT_CONFIG: ExtensionConfigRow = {
-  required_version: "2.2.0",
+  required_version: "2.3.0",
   update_url:
     "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb",
-  message: "Please install ReachPod extension 2.2.0 from the Chrome Web Store to continue.",
+  message: "Please install ReachPod extension 2.3.0 from the Chrome Web Store to continue.",
   updated_at: new Date(0).toISOString()
 };
 

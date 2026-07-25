@@ -9,7 +9,7 @@ export const SITE = {
 
 /** Chrome Web Store listing for the ReachPod extension. */
 export const EXTENSION = {
-  required_version: "2.2.0",
+  required_version: "2.3.0",
   download_url:
     "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb"
 } as const;
