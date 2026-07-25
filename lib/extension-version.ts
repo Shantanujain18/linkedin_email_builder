@@ -14,8 +14,9 @@ export type ExtensionConfigRow = {
 
 const DEFAULT_CONFIG: ExtensionConfigRow = {
   required_version: "2.2.0",
-  update_url: "https://github.com/Shantanujain18/linkedin_post_scrapper/raw/main/dist.zip",
-  message: "Please install ReachPod extension 2.2.0 to continue.",
+  update_url:
+    "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb",
+  message: "Please install ReachPod extension 2.2.0 from the Chrome Web Store to continue.",
   updated_at: new Date(0).toISOString()
 };
 

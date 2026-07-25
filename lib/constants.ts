@@ -7,11 +7,11 @@ export const SITE = {
   logo: "/brand/reachpod-logo.png"
 } as const;
 
-/** Chrome extension install package (Load unpacked from unzipped folder). */
+/** Chrome Web Store listing for the ReachPod extension. */
 export const EXTENSION = {
   required_version: "2.2.0",
-  download_url: "https://github.com/Shantanujain18/linkedin_post_scrapper/raw/main/dist.zip",
-  github_page: "https://github.com/Shantanujain18/linkedin_post_scrapper/blob/main/dist.zip"
+  download_url:
+    "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb"
 } as const;
 
 export const NAV_LINKS = [

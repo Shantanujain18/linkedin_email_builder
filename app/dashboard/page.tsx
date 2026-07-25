@@ -1157,7 +1157,7 @@ export default function Home() {
               target="_blank"
               rel="noopener noreferrer"
             >
-              Download latest extension
+              Get it on Chrome Web Store
             </a>
           </div>
 
@@ -1289,32 +1289,15 @@ export default function Home() {
                   <h3 className="extension-guide-title">How to use the Chrome extension</h3>
                   <ol className="extension-steps">
                     <li>
-                      Download{" "}
+                      Install{" "}
                       <a
                         href={EXTENSION.download_url}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
-                        the Chrome extension (v{EXTENSION.required_version})
+                        ReachPod from the Chrome Web Store
                       </a>{" "}
-                      and unzip it.
-                    </li>
-                    <li>
-                      Open{" "}
-                      <a
-                        href="chrome://extensions"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          navigator.clipboard?.writeText("chrome://extensions").then(
-                            () => showStatus("Copied chrome://extensions — paste it in Chrome’s address bar."),
-                            () => showStatus("Open chrome://extensions in Chrome’s address bar.")
-                          );
-                        }}
-                      >
-                        chrome://extensions
-                      </a>
-                      , turn on <strong>Developer mode</strong>, click{" "}
-                      <strong>Load unpacked</strong>, and select the unzipped folder.
+                      (v{EXTENSION.required_version}), then pin it.
                     </li>
                     <li>
                       On LinkedIn, open the extension, click <strong>Search and prepare emails</strong>, wait for drafts, then return here to send.
