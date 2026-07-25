@@ -165,6 +165,22 @@ function formatDateTime(value?: string | null) {
   });
 }
 
+function toLocalDay(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function formatDayLabel(day: string) {
+  const date = new Date(`${day}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return day;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function parsePostEmails(emailsJson: unknown): string[] {
   try {
     const parsed = JSON.parse(String(emailsJson || "[]"));
@@ -173,6 +189,27 @@ function parsePostEmails(emailsJson: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+function parsePostPhones(phonesJson: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(phonesJson || "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((phone) => String(phone || "").trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function postSortRank(
+  outcome: { kind: string } | undefined,
+  valid: boolean
+) {
+  if (outcome?.kind === "pending") return 0;
+  if (outcome?.kind === "drafted") return 1;
+  if (valid && outcome?.kind === "skipped") return 2;
+  if (valid) return 3;
+  return 4;
 }
 
 function truncateText(value: string, max = 120) {
@@ -334,6 +371,8 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [postFilter, setPostFilter] = useState<PostFilter>("all");
   const [postSearch, setPostSearch] = useState("");
+  const [postDateFilter, setPostDateFilter] = useState("");
+  const [draftDateFilter, setDraftDateFilter] = useState("");
   const [postPage, setPostPage] = useState(1);
   const [postPageSize, setPostPageSize] = useState<PageSize>(25);
   const emailSetupInit = useRef(false);
@@ -408,8 +447,8 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [detailId]);
 
-  useEffect(() => { setPage(1); }, [statusFilter, pageSize, searchQuery]);
-  useEffect(() => { setPostPage(1); }, [postFilter, postPageSize, postSearch]);
+  useEffect(() => { setPage(1); }, [statusFilter, pageSize, searchQuery, draftDateFilter]);
+  useEffect(() => { setPostPage(1); }, [postFilter, postPageSize, postSearch, postDateFilter]);
 
   function showStatus(message: string) {
     if (statusTimer.current) {
@@ -520,15 +559,20 @@ export default function Home() {
     try {
       if (ids.length) {
         const queue = [...ids];
+        const total = ids.length;
         while (queue.length) {
           const chunkIds = queue.splice(0, 20);
-          showStatus(`Writing emails… ${createdTotal} created · ${queue.length} left in queue`);
+          const waiting = queue.length;
+          const writing = chunkIds.length;
+          showStatus(
+            `Writing emails… ${createdTotal} created · writing ${writing} now · ${waiting} waiting (${total} total)`
+          );
           const response = await fetch("/api/drafts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ postIds: chunkIds })
           });
-          const data = await response.json();
+          const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             showStatus(data.error || "Draft generation failed.");
             return;
@@ -543,13 +587,17 @@ export default function Home() {
         let remaining = 1;
         while (remaining > 0 && guard < 50) {
           guard += 1;
-          showStatus(`Writing emails… ${createdTotal} created · ${skippedTotal} skipped`);
+          showStatus(
+            remaining > 1
+              ? `Writing emails… ${createdTotal} created · ~${remaining} still pending`
+              : `Writing emails… ${createdTotal} created · finishing…`
+          );
           const response = await fetch("/api/drafts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({})
           });
-          const data = await response.json();
+          const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             showStatus(data.error || "Draft generation failed.");
             return;
@@ -557,7 +605,7 @@ export default function Home() {
           createdTotal += Number(data.created) || 0;
           skippedTotal += Number(data.skipped) || 0;
           remaining = Number(data.remaining) || 0;
-          if (!(Number(data.pending) > 0)) break;
+          if (!(Number(data.pending) > 0) && remaining <= 0) break;
         }
       }
 
@@ -569,6 +617,8 @@ export default function Home() {
         showStatus(parts.join(" · ") + ".");
       }
       await refresh();
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : "Draft generation failed.");
     } finally {
       setBusy(false);
     }
@@ -931,10 +981,29 @@ export default function Home() {
     await generate([postId]);
   }
 
+  const postDateOptions = useMemo(() => {
+    const days = new Set<string>();
+    for (const post of stats.posts) {
+      const day = toLocalDay(String(post.created_at || ""));
+      if (day) days.add(day);
+    }
+    return [...days].sort((a, b) => b.localeCompare(a));
+  }, [stats.posts]);
+
+  const draftDateOptions = useMemo(() => {
+    const days = new Set<string>();
+    for (const draft of stats.drafts) {
+      const day = toLocalDay(draft.created_at);
+      if (day) days.add(day);
+    }
+    return [...days].sort((a, b) => b.localeCompare(a));
+  }, [stats.drafts]);
+
   const filteredPosts = useMemo(() => {
     const q = postSearch.trim().toLowerCase();
-    return stats.posts.filter((post) => {
+    const filtered = stats.posts.filter((post) => {
       const emails = parsePostEmails(post.emails_json);
+      const phones = parsePostPhones(post.phones_json);
       const valid = emails.length > 0;
       const outcome = postOutcomes.get(Number(post.id));
       if (postFilter === "valid" && !valid) return false;
@@ -942,6 +1011,7 @@ export default function Home() {
       if (postFilter === "drafted" && outcome?.kind !== "drafted") return false;
       if (postFilter === "skipped" && outcome?.kind !== "skipped") return false;
       if (postFilter === "pending" && outcome?.kind !== "pending") return false;
+      if (postDateFilter && toLocalDay(String(post.created_at || "")) !== postDateFilter) return false;
       if (!q) return true;
       const haystack = [
         post.posted_by,
@@ -949,6 +1019,7 @@ export default function Home() {
         post.posted_by_url,
         post.post_url,
         emails.join(" "),
+        phones.join(" "),
         outcome?.label,
         outcome?.reason
       ]
@@ -956,7 +1027,18 @@ export default function Home() {
         .join(" ");
       return haystack.includes(q);
     });
-  }, [stats.posts, postOutcomes, postFilter, postSearch]);
+
+    // Valid+Pending first, then drafted, other valid, then invalid.
+    return filtered.sort((a, b) => {
+      const aValid = parsePostEmails(a.emails_json).length > 0;
+      const bValid = parsePostEmails(b.emails_json).length > 0;
+      const rank =
+        postSortRank(postOutcomes.get(Number(a.id)), aValid) -
+        postSortRank(postOutcomes.get(Number(b.id)), bValid);
+      if (rank !== 0) return rank;
+      return Number(b.id) - Number(a.id);
+    });
+  }, [stats.posts, postOutcomes, postFilter, postSearch, postDateFilter]);
 
   const postTotalPages = Math.max(1, Math.ceil(filteredPosts.length / postPageSize));
   const safePostPage = Math.min(postPage, postTotalPages);
@@ -1000,6 +1082,7 @@ export default function Home() {
       if (statusFilter === "sent" && draft.status !== "sent") return false;
       if (statusFilter === "skipped" && draft.status !== "skipped") return false;
       if (statusFilter === "replied" && !draft.replied) return false;
+      if (draftDateFilter && toLocalDay(draft.created_at) !== draftDateFilter) return false;
       if (!q) return true;
       const contact = `${draft.contact_name || ""} ${draft.recipient_name || ""}`.toLowerCase();
       return (
@@ -1010,7 +1093,7 @@ export default function Home() {
         String(draft.phone || "").toLowerCase().includes(q)
       );
     });
-  }, [stats.drafts, statusFilter, searchQuery]);
+  }, [stats.drafts, statusFilter, searchQuery, draftDateFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredDrafts.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -1370,7 +1453,7 @@ export default function Home() {
                     <div>
                       <h3 className="section-title" style={{ marginBottom: 4 }}>Scraped posts</h3>
                       <p className="hint" style={{ margin: 0 }}>
-                        Valid = email found · Skipped = skills don’t fit · Pending = match OK — write the email now
+                        Sorted: Pending first, then Drafted, then other Valid, then Invalid · Pending = match OK — write now
                       </p>
                     </div>
                     <button
@@ -1411,6 +1494,19 @@ export default function Home() {
                       />
                       <select
                         className="toolbar-select"
+                        value={postDateFilter}
+                        onChange={(e) => setPostDateFilter(e.target.value)}
+                        aria-label="Filter by scrape date"
+                      >
+                        <option value="">All dates</option>
+                        {postDateOptions.map((day) => (
+                          <option key={day} value={day}>
+                            {formatDayLabel(day)}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="toolbar-select"
                         value={postPageSize}
                         onChange={(e) => setPostPageSize(Number(e.target.value) as PageSize)}
                         aria-label="Rows per page"
@@ -1424,13 +1520,19 @@ export default function Home() {
 
                   {filteredPosts.length === 0 ? (
                     <div className="info-note" style={{ marginTop: 12 }}>
-                      {postSearch.trim() || postFilter !== "all"
+                      {postSearch.trim() || postFilter !== "all" || postDateFilter
                         ? "No posts match your search or filter."
                         : "No scraped posts yet."}
                     </div>
                   ) : (
                     <>
-                      <div className="table-wrap leads-posts-wrap" style={{ marginTop: 12 }}>
+                      <div className="table-count" style={{ marginTop: 12 }}>
+                        Showing {postPageStart}–{postPageEnd} of {filteredPosts.length} posts
+                        {filteredPosts.length !== stats.posts.length
+                          ? ` · ${stats.posts.length} total`
+                          : null}
+                      </div>
+                      <div className="table-wrap leads-posts-wrap" style={{ marginTop: 8 }}>
                         <table className="draft-table leads-posts-table">
                           <thead>
                             <tr>
@@ -1438,7 +1540,8 @@ export default function Home() {
                               <th style={{ width: 140 }}>Scraped</th>
                               <th style={{ width: 110 }}>Posted</th>
                               <th>Snippet</th>
-                              <th style={{ width: 200 }}>Emails</th>
+                              <th style={{ width: 160 }}>Emails</th>
+                              <th style={{ width: 130 }}>Phones</th>
                               <th style={{ width: 90 }}>Class</th>
                               <th style={{ width: 100 }}>Draft</th>
                               <th style={{ width: 120 }}></th>
@@ -1447,6 +1550,7 @@ export default function Home() {
                           <tbody>
                             {pagePosts.map((post) => {
                               const emails = parsePostEmails(post.emails_json);
+                              const phones = parsePostPhones(post.phones_json);
                               const valid = emails.length > 0;
                               const outcome = postOutcomes.get(Number(post.id)) || {
                                 kind: "none" as const,
@@ -1485,6 +1589,9 @@ export default function Home() {
                                   </td>
                                   <td className="col-email" title={emails.join(", ") || undefined}>
                                     {emails.length ? emails.join(", ") : "—"}
+                                  </td>
+                                  <td className="col-mobile" title={phones.join(", ") || undefined}>
+                                    {phones.length ? phones.join(", ") : "—"}
                                   </td>
                                   <td>
                                     {valid ? (
@@ -1885,6 +1992,19 @@ export default function Home() {
                   </select>
                   <select
                     className="toolbar-select"
+                    value={draftDateFilter}
+                    onChange={(e) => setDraftDateFilter(e.target.value)}
+                    aria-label="Filter by draft date"
+                  >
+                    <option value="">All dates</option>
+                    {draftDateOptions.map((day) => (
+                      <option key={day} value={day}>
+                        {formatDayLabel(day)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="toolbar-select"
                     value={pageSize}
                     onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
                     aria-label="Rows per page"
@@ -1900,7 +2020,7 @@ export default function Home() {
                 <div className="empty-state">
                   <div className="empty-icon">∅</div>
                   <p>
-                    {searchQuery.trim() || statusFilter !== "all"
+                    {searchQuery.trim() || statusFilter !== "all" || draftDateFilter
                       ? "No drafts match your search"
                       : "No drafts yet — finish Find people first"}
                   </p>
@@ -1912,7 +2032,13 @@ export default function Home() {
                 </div>
               ) : (
                 <>
-                  <div className="table-wrap">
+                  <div className="table-count">
+                    Showing {pageStart}–{pageEnd} of {filteredDrafts.length} records
+                    {filteredDrafts.length !== stats.drafts.length
+                      ? ` · ${stats.drafts.length} total`
+                      : null}
+                  </div>
+                  <div className="table-wrap" style={{ marginTop: 8 }}>
                     <table className="draft-table">
                       <thead>
                         <tr>
@@ -1925,6 +2051,8 @@ export default function Home() {
                               aria-label="Select all on page"
                             />
                           </th>
+                          <th style={{ width: 72 }}>Action</th>
+                          <th style={{ width: 80 }}>Status</th>
                           <th style={{ width: 140 }}>Company</th>
                           <th style={{ width: 110 }}>Location</th>
                           <th style={{ width: 120 }}>Contact</th>
@@ -1932,12 +2060,10 @@ export default function Home() {
                           <th style={{ width: 160 }}>Email</th>
                           <th style={{ width: 180 }}>Subject</th>
                           <th>Body</th>
-                          <th style={{ width: 80 }}>Status</th>
                           <th style={{ width: 130 }}>Created</th>
                           <th style={{ width: 130 }}>Sent</th>
                           <th style={{ width: 64 }}>Called</th>
                           <th style={{ width: 72 }}>Replied</th>
-                          <th style={{ width: 72 }}></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1956,6 +2082,12 @@ export default function Home() {
                                   aria-label={`Select draft to ${draft.recipient_email}`}
                                 />
                               </td>
+                              <td className="actions-cell">
+                                <button className="link-btn" type="button" disabled={busy} onClick={() => openDetails(draft)}>
+                                  Details
+                                </button>
+                              </td>
+                              <td>{statusBadge(draft.status, draft.replied)}</td>
                               <td className="col-company" title={company}>{company}</td>
                               <td className="col-location" title={location}>{location}</td>
                               <td className="col-contact" title={contact}>{contact}</td>
@@ -1963,7 +2095,6 @@ export default function Home() {
                               <td className="col-email" title={draft.recipient_email}>{draft.recipient_email}</td>
                               <td className="col-subject" title={draft.subject}>{draft.subject}</td>
                               <td className="col-body">{draft.body || "—"}</td>
-                              <td>{statusBadge(draft.status, draft.replied)}</td>
                               <td className="col-datetime" title={draft.created_at || undefined}>
                                 {formatDateTime(draft.created_at)}
                               </td>
@@ -1987,11 +2118,6 @@ export default function Home() {
                                   onChange={(e) => toggleReplied(draft, e.target.checked)}
                                   aria-label={`Mark replied for ${draft.recipient_email}`}
                                 />
-                              </td>
-                              <td className="actions-cell">
-                                <button className="link-btn" type="button" disabled={busy} onClick={() => openDetails(draft)}>
-                                  Details
-                                </button>
                               </td>
                             </tr>
                           );

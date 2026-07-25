@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isUser, requireUser } from "@/lib/auth";
-import { extractEmails } from "@/lib/csv";
+import { extractEmails, extractPhones } from "@/lib/csv";
 import { now, upsertLinkedInPosts } from "@/lib/db";
 import { requireMatchingExtensionVersion } from "@/lib/extension-version";
 
@@ -18,10 +18,16 @@ function normalizePost(raw: RawPost) {
   const postedDate = str(raw.posted_date ?? raw.postedDate);
   const postedContent = str(raw.posted_content ?? raw.postedContent);
   const postUrl = str(raw.post_url ?? raw.postUrl);
-  const emails = extractEmails(
-    [postedBy, postedByUrl, postedDate, postedContent, postUrl].join("\n")
-  );
-  return { postedBy, postedByUrl, postedDate, postedContent, postUrl, emails };
+  const blob = [postedBy, postedByUrl, postedDate, postedContent, postUrl].join("\n");
+  return {
+    postedBy,
+    postedByUrl,
+    postedDate,
+    postedContent,
+    postUrl,
+    emails: extractEmails(blob),
+    phones: extractPhones(blob)
+  };
 }
 
 export async function POST(request: Request) {
@@ -51,6 +57,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       imported: rows.length,
       withEmails: rows.filter((row) => row.emails.length).length,
+      withPhones: rows.filter((row) => row.phones.length).length,
       at: now()
     });
   } catch (error) {

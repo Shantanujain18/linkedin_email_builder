@@ -41,7 +41,8 @@ export async function POST(request: Request) {
         postedDate: row.postedDate,
         postedContent: row.postedContent,
         postUrl: row.postUrl,
-        emails: row.emails
+        emails: row.emails,
+        phones: row.phones
       }))
     );
 
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       imported: accepted.length,
       withEmails: accepted.filter((row) => row.emails.length).length,
+      withPhones: accepted.filter((row) => row.phones.length).length,
       truncated,
       quota: {
         plan: reservation.plan,

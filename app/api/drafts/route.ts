@@ -28,7 +28,18 @@ type PendingDraft = {
   postedBy: string;
   content: string;
   email: string;
+  phones: string[];
 };
+
+function parseJsonList(raw: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(raw || "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((value) => String(value || "").trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 function mapDraft(draft: Record<string, unknown>) {
   return {
@@ -152,15 +163,16 @@ export async function POST(request: Request) {
       const postId = Number(post.id);
       if (requestedSet && !requestedSet.has(postId)) continue;
       if (existingPostIds.has(postId)) continue;
-      const emails = JSON.parse(String(post.emailsJson || "[]")) as string[];
-      const email = emails.find((value) => String(value || "").trim());
+      const emails = parseJsonList(post.emailsJson);
+      const email = emails[0];
       if (!email) continue;
       pending.push({
         key: String(postId),
         postId,
         postedBy: String(post.postedBy || ""),
         content: String(post.postedContent || ""),
-        email: String(email).trim()
+        email,
+        phones: parseJsonList(post.phonesJson)
       });
     }
 
@@ -199,7 +211,7 @@ export async function POST(request: Request) {
           recipientName: draft.contact_name || item.postedBy,
           subject: draft.subject,
           body: draft.body,
-          phone: draft.phone,
+          phone: draft.phone || item.phones[0] || "",
           location: draft.location,
           company: draft.company,
           contactName: draft.contact_name || item.postedBy,

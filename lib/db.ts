@@ -671,6 +671,7 @@ export async function getPosts(userId: string) {
     posted_content: row.postedContent,
     post_url: row.postUrl,
     emails_json: row.emailsJson,
+    phones_json: row.phonesJson || "[]",
     draft_skip_reason: row.draftSkipReason || "",
     created_at: row.createdAt
   }));
@@ -1107,11 +1108,13 @@ export async function upsertLinkedInPosts(
     postedContent: string;
     postUrl: string;
     emails: string[];
+    phones?: string[];
   }>
 ) {
   const db = getDb();
   const timestamp = now();
   for (const row of rows) {
+    const phones = Array.isArray(row.phones) ? row.phones : [];
     await db
       .insert(linkedinPosts)
       .values({
@@ -1122,6 +1125,7 @@ export async function upsertLinkedInPosts(
         postedContent: row.postedContent,
         postUrl: row.postUrl,
         emailsJson: JSON.stringify(row.emails),
+        phonesJson: JSON.stringify(phones),
         createdAt: timestamp
       })
       .onConflictDoUpdate({
@@ -1129,7 +1133,8 @@ export async function upsertLinkedInPosts(
         set: {
           postedDate: row.postedDate,
           postUrl: row.postUrl,
-          emailsJson: JSON.stringify(row.emails)
+          emailsJson: JSON.stringify(row.emails),
+          phonesJson: JSON.stringify(phones)
         }
       });
   }

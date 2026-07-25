@@ -56,6 +56,7 @@ export const linkedinPosts = pgTable(
     postedContent: text("posted_content").notNull().default(""),
     postUrl: text("post_url").notNull().default(""),
     emailsJson: text("emails_json").notNull().default("[]"),
+    phonesJson: text("phones_json").notNull().default("[]"),
     draftSkipReason: text("draft_skip_reason").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
   },
