@@ -768,6 +768,14 @@ export default function Home() {
     if (pageParam === "profile" || pageParam === "leads" || pageParam === "send") setCurrentPage(pageParam);
   }, []);
 
+  function goToPage(next: PageId) {
+    setCurrentPage(next);
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("page") === next) return;
+    url.searchParams.set("page", next);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
+
   async function signOut() {
     setBusy(true);
     try {
@@ -1669,7 +1677,7 @@ export default function Home() {
                 key={item.id}
                 type="button"
                 className={`nav-item${currentPage === item.id ? " active" : ""}`}
-                onClick={() => setCurrentPage(item.id)}
+                onClick={() => goToPage(item.id)}
               >
                 <span className={`nav-dot ${meta.dot}`} aria-hidden />
                 <span className="nav-label">
@@ -1883,7 +1891,7 @@ export default function Home() {
               {profileReady ? (
                 <div className="step-next-bar">
                   <p>Profile saved. Next: find people to email.</p>
-                  <button type="button" onClick={() => setCurrentPage("leads")}>Continue to Find people →</button>
+                  <button type="button" onClick={() => goToPage("leads")}>Continue to Find people →</button>
                 </div>
               ) : (
                 <div className="info-note">Upload a resume to unlock the next step.</div>
@@ -1905,7 +1913,7 @@ export default function Home() {
               {!profileReady ? (
                 <div className="prereq-banner">
                   <p>Upload your resume first so we can match skills to job posts.</p>
-                  <button type="button" className="btn-secondary btn-compact" onClick={() => setCurrentPage("profile")}>
+                  <button type="button" className="btn-secondary btn-compact" onClick={() => goToPage("profile")}>
                     Go to Your profile
                   </button>
                 </div>
@@ -2251,7 +2259,7 @@ export default function Home() {
               {draftsReady ? (
                 <div className="step-next-bar">
                   <p>{stats.counts.drafts.total} draft{stats.counts.drafts.total === 1 ? "" : "s"} ready. Next: connect your email and send.</p>
-                  <button type="button" onClick={() => setCurrentPage("send")}>Continue to Send emails →</button>
+                  <button type="button" onClick={() => goToPage("send")}>Continue to Send emails →</button>
                 </div>
               ) : null}
             </section>
@@ -2292,7 +2300,7 @@ export default function Home() {
                     {!draftsReady ? (
                       <p>
                         No email drafts yet.{" "}
-                        <button type="button" className="link-btn" onClick={() => setCurrentPage("leads")}>
+                        <button type="button" className="link-btn" onClick={() => goToPage("leads")}>
                           Go to Find people
                         </button>
                       </p>
@@ -2457,7 +2465,7 @@ export default function Home() {
                 <div className="prereq-banner" style={{ marginBottom: 12 }}>
                   <p>
                     Resume attachment is on, but no resume file is saved.{" "}
-                    <button type="button" className="link-btn" onClick={() => setCurrentPage("profile")}>
+                    <button type="button" className="link-btn" onClick={() => goToPage("profile")}>
                       Re-upload resume
                     </button>
                     {" "}or turn off “Attach resume” below.
@@ -2569,7 +2577,7 @@ export default function Home() {
                       : "No drafts yet — finish Find people first"}
                   </p>
                   {!draftsReady ? (
-                    <button type="button" className="btn-secondary" style={{ marginTop: 12 }} onClick={() => setCurrentPage("leads")}>
+                    <button type="button" className="btn-secondary" style={{ marginTop: 12 }} onClick={() => goToPage("leads")}>
                       Go to Find people
                     </button>
                   ) : null}
