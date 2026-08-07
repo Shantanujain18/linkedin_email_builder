@@ -1,25 +1,31 @@
 import nodemailer from "nodemailer";
 import type { SmtpSettings } from "./db";
 
-export async function sendMail(options: {
-  smtp: SmtpSettings;
-  to: string;
-  subject: string;
-  body: string;
-  attachment?: { filename: string; content: Buffer; contentType?: string } | null;
-}) {
-  const { smtp, to, subject, body, attachment } = options;
+export type MailTransporter = ReturnType<typeof nodemailer.createTransport>;
+
+export function createMailTransport(smtp: SmtpSettings): MailTransporter {
   if (!smtp.user || !smtp.pass) {
     throw new Error("Save SMTP user and App Password before sending.");
   }
-
-  const transporter = nodemailer.createTransport({
+  return nodemailer.createTransport({
     host: smtp.host || "smtp.gmail.com",
     port: smtp.port || 587,
     secure: smtp.secure,
     auth: { user: smtp.user, pass: smtp.pass }
   });
+}
 
+export async function sendMailWith(
+  transporter: MailTransporter,
+  options: {
+    smtp: SmtpSettings;
+    to: string;
+    subject: string;
+    body: string;
+    attachment?: { filename: string; content: Buffer; contentType?: string } | null;
+  }
+) {
+  const { smtp, to, subject, body, attachment } = options;
   const attachments =
     attachment && attachment.content?.length
       ? [
@@ -40,4 +46,15 @@ export async function sendMail(options: {
     text: body,
     attachments
   });
+}
+
+export async function sendMail(options: {
+  smtp: SmtpSettings;
+  to: string;
+  subject: string;
+  body: string;
+  attachment?: { filename: string; content: Buffer; contentType?: string } | null;
+}) {
+  const transporter = createMailTransport(options.smtp);
+  await sendMailWith(transporter, options);
 }

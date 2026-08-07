@@ -1,6 +1,6 @@
 /**
  * ponytail: mirrors getDraftsForSend / isUnsent — Send-all must not re-queue skipped drafts.
- * Run: npx tsx lib/send-ready-filter.check.ts
+ * Run: npm test / npx tsx test/send-ready-filter.check.ts
  */
 function isReadyToSend(draft: { status: string; replied?: boolean }) {
   return draft.status !== "sent" && draft.status !== "skipped" && !draft.replied;

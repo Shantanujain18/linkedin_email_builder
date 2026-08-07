@@ -1402,21 +1402,30 @@ export async function listDrafts(userId: string) {
 
 export async function getDraftsForSend(
   userId: string,
-  options: { all?: boolean; draftIds?: number[]; draftId?: number | null }
+  options: {
+    all?: boolean;
+    draftIds?: number[];
+    draftId?: number | null;
+    /** Cap rows for send-all so each batch does not reload the whole backlog. */
+    fetchLimit?: number;
+  }
 ) {
   const db = getDb();
+  const fetchLimit = Math.max(1, Math.min(100, Math.floor(Number(options.fetchLimit) || 50)));
+  const draftSelect = {
+    id: emailDrafts.id,
+    recipientEmail: emailDrafts.recipientEmail,
+    subject: emailDrafts.subject,
+    body: emailDrafts.body,
+    status: emailDrafts.status,
+    replied: emailDrafts.replied
+  };
+
   if (options.all) {
     // Match dashboard "ready to send": not sent, not skipped, not replied.
     // Including skipped caused Send-all to reprocess the same rows forever (0 sent, rising skipped).
     return db
-      .select({
-        id: emailDrafts.id,
-        recipientEmail: emailDrafts.recipientEmail,
-        subject: emailDrafts.subject,
-        body: emailDrafts.body,
-        status: emailDrafts.status,
-        replied: emailDrafts.replied
-      })
+      .select(draftSelect)
       .from(emailDrafts)
       .where(
         and(
@@ -1426,18 +1435,12 @@ export async function getDraftsForSend(
           eq(emailDrafts.replied, false)
         )
       )
-      .orderBy(emailDrafts.id);
+      .orderBy(emailDrafts.id)
+      .limit(fetchLimit);
   }
   if (options.draftIds?.length) {
     return db
-      .select({
-        id: emailDrafts.id,
-        recipientEmail: emailDrafts.recipientEmail,
-        subject: emailDrafts.subject,
-        body: emailDrafts.body,
-        status: emailDrafts.status,
-        replied: emailDrafts.replied
-      })
+      .select(draftSelect)
       .from(emailDrafts)
       .where(
         and(
@@ -1451,14 +1454,7 @@ export async function getDraftsForSend(
   }
   if (options.draftId) {
     return db
-      .select({
-        id: emailDrafts.id,
-        recipientEmail: emailDrafts.recipientEmail,
-        subject: emailDrafts.subject,
-        body: emailDrafts.body,
-        status: emailDrafts.status,
-        replied: emailDrafts.replied
-      })
+      .select(draftSelect)
       .from(emailDrafts)
       .where(and(eq(emailDrafts.id, options.draftId), eq(emailDrafts.userId, userId)))
       .limit(1);
@@ -1471,6 +1467,35 @@ export async function updateDraftStatus(userId: string, draftId: number, status:
     .update(emailDrafts)
     .set({ status, updatedAt: now() })
     .where(and(eq(emailDrafts.id, draftId), eq(emailDrafts.userId, userId)));
+}
+
+export async function updateDraftStatuses(userId: string, draftIds: number[], status: string) {
+  const ids = Array.from(new Set(draftIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  if (!ids.length) return 0;
+  await getDb()
+    .update(emailDrafts)
+    .set({ status, updatedAt: now() })
+    .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.id, ids)));
+  return ids.length;
+}
+
+/** Lightweight resume fields for send — never loads resume_text. */
+export async function getResumeAttachmentMeta(userId: string) {
+  const [row] = await getDb()
+    .select({
+      resumePath: profiles.resumePath,
+      resumeFilename: profiles.resumeFilename,
+      resumeMime: profiles.resumeMime
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    resume_path: row.resumePath || "",
+    resume_filename: row.resumeFilename || "",
+    resume_mime: row.resumeMime || ""
+  };
 }
 
 export async function updateDraftCalled(userId: string, draftId: number, called: boolean) {

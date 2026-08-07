@@ -1,8 +1,8 @@
 /**
  * ponytail: extractPhones must keep real mobiles and drop short/noisy matches.
- * Run: npx tsx lib/extract-phones.check.ts
+ * Run: npm test / npx tsx test/extract-phones.check.ts
  */
-import { extractPhones } from "./csv";
+import { extractPhones } from "@/lib/csv";
 
 const text = "Reach HR at +91 98765 43210 or call (415) 555-0199. Fake: 12345.";
 const phones = extractPhones(text);

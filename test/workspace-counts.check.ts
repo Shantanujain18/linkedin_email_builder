@@ -1,6 +1,6 @@
 /**
  * ponytail: status bootstrap counts must stay SQL-shaped (no full table scan in JS).
- * Run: npx tsx lib/workspace-counts.check.ts
+ * Run: npm test / npx tsx test/workspace-counts.check.ts
  */
 function draftCountsFromRows(rows: Array<{ status: string; replied: boolean }>) {
   let unsent = 0;

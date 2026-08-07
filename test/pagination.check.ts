@@ -1,6 +1,6 @@
 /**
  * ponytail: page helpers used by posts/drafts list APIs.
- * Run: npx tsx lib/pagination.check.ts
+ * Run: npm test / npx tsx test/pagination.check.ts
  */
 function parsePageSize(raw: unknown, fallback: 10 | 25 | 50 | 100 = 25): 10 | 25 | 50 | 100 {
   const n = Number(raw);

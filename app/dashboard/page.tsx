@@ -490,6 +490,7 @@ export default function Home() {
   });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [immediateJoiner, setImmediateJoiner] = useState(false);
   const [skillList, setSkillList] = useState<string[]>([]);
@@ -527,6 +528,8 @@ export default function Home() {
   const emailSetupInit = useRef(false);
   const knownPostTotal = useRef(0);
   const knownDraftTotal = useRef(0);
+  const sendingRef = useRef(false);
+  const sendAbortRef = useRef<AbortController | null>(null);
 
   const postsQueryKey = [
     "posts",
@@ -767,6 +770,16 @@ export default function Home() {
 
   useEffect(() => { setPage(1); }, [statusFilter, pageSize, searchQuery, draftDateFilter]);
   useEffect(() => { setPostPage(1); }, [postFilter, postPageSize, postSearch, postDateFilter]);
+
+  useEffect(() => {
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      if (!sendingRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
 
   function showStatus(message: string) {
     if (statusTimer.current) {
@@ -1179,6 +1192,10 @@ export default function Home() {
     setSelectedIds((prev) => checked ? Array.from(new Set([...prev, id])) : prev.filter((value) => value !== id));
   }
 
+  function stopSending() {
+    sendAbortRef.current?.abort();
+  }
+
   async function sendDrafts(options: { draftId?: number; draftIds?: number[]; all?: boolean }) {
     const count = options.all
       ? unsentCount
@@ -1189,10 +1206,16 @@ export default function Home() {
         ? `${options.draftIds.length} selected draft(s)`
         : "this draft";
     const withResume = bulkAttachResume ? " with resume attached" : " without resume";
-    if (!window.confirm(`Send ${label}${withResume}?`)) return;
+    if (!window.confirm(
+      `Send ${label}${withResume}?\n\nPlease don’t refresh or close this page until sending finishes.`
+    )) return;
 
     // Small batches so each request stays under Vercel Hobby timeouts (~10s).
-    const BATCH = 2;
+    const BATCH = 5;
+    const abort = new AbortController();
+    sendAbortRef.current = abort;
+    sendingRef.current = true;
+    setSending(true);
     setBusy(true);
 
     let sentTotal = 0;
@@ -1200,6 +1223,7 @@ export default function Home() {
     let limitedTotal = 0;
     let failedTotal = 0;
     let attachedResume = false;
+    let stopped = false;
     let lastQuota = stats.quota?.send || null;
 
     const applyBatchResults = (
@@ -1244,21 +1268,35 @@ export default function Home() {
         let remaining = Math.max(1, count);
         let prevRemaining = Infinity;
         while (remaining > 0 && guard < 500) {
+          if (abort.signal.aborted) {
+            stopped = true;
+            break;
+          }
           guard += 1;
           showStatus(
-            `Sending emails… ${sentTotal} sent` +
+            `Sending emails… don’t refresh · ${sentTotal} sent` +
               (skippedTotal ? ` · ${skippedTotal} skipped` : "") +
               (remaining ? ` · ${remaining} left` : "")
           );
-          const response = await fetch("/api/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              all: true,
-              limit: BATCH,
-              attach_resume: bulkAttachResume
-            })
-          });
+          let response: Response;
+          try {
+            response = await fetch("/api/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                all: true,
+                limit: BATCH,
+                attach_resume: bulkAttachResume
+              }),
+              signal: abort.signal
+            });
+          } catch (error) {
+            if (abort.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+              stopped = true;
+              break;
+            }
+            throw error;
+          }
           const data = await response.json();
           if (!response.ok) {
             showStatus(data.error || "Send failed.");
@@ -1294,17 +1332,33 @@ export default function Home() {
         const queue = [...ids];
         const total = queue.length;
         while (queue.length) {
+          if (abort.signal.aborted) {
+            stopped = true;
+            break;
+          }
           const chunk = queue.splice(0, BATCH);
-          showStatus(`Sending emails… ${sentTotal}/${total} sent · ${queue.length} left`);
-          const response = await fetch("/api/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              draftIds: chunk,
-              limit: chunk.length,
-              attach_resume: bulkAttachResume
-            })
-          });
+          showStatus(
+            `Sending emails… don’t refresh · ${sentTotal}/${total} sent · ${queue.length} left`
+          );
+          let response: Response;
+          try {
+            response = await fetch("/api/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                draftIds: chunk,
+                limit: chunk.length,
+                attach_resume: bulkAttachResume
+              }),
+              signal: abort.signal
+            });
+          } catch (error) {
+            if (abort.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+              stopped = true;
+              break;
+            }
+            throw error;
+          }
           const data = await response.json();
           if (!response.ok) {
             showStatus(data.error || "Send failed.");
@@ -1320,7 +1374,9 @@ export default function Home() {
         }
       }
 
-      const parts = [`Sent ${sentTotal}`];
+      const parts = stopped
+        ? [`Stopped · sent ${sentTotal}`]
+        : [`Sent ${sentTotal}`];
       if (skippedTotal) parts.push(`${skippedTotal} skipped`);
       if (limitedTotal) parts.push(`${limitedTotal} held (daily send limit)`);
       if (failedTotal) parts.push(`${failedTotal} failed`);
@@ -1329,6 +1385,9 @@ export default function Home() {
       showStatus(parts.join(" · ") + ".");
       await refreshAll();
     } finally {
+      sendingRef.current = false;
+      sendAbortRef.current = null;
+      setSending(false);
       setBusy(false);
     }
   }
@@ -1719,14 +1778,82 @@ export default function Home() {
                     </div>
                     <label className="field-label" style={{ marginTop: 18 }}>Profile summary</label>
                     <div className="profile-readout">
-                      <div><strong>{String(stats.profile.name || "Candidate")}</strong> · {String(stats.profile.current_role || "Role not detected")}</div>
-                      <div>Immediate joiner: {immediateJoiner ? "yes" : "no"}</div>
-                      <div>Skills: {skillList.length ? skillList.join(", ") : "—"}</div>
-                      <div>
-                        Resume file: {hasResumeFile
-                          ? String(stats.profile.resume_filename || "saved")
-                          : "missing — re-upload if you want to attach it to emails"}
-                      </div>
+                      <dl className="profile-readout-grid">
+                        <div>
+                          <dt>Name</dt>
+                          <dd>{String(stats.profile.name || "—")}</dd>
+                        </div>
+                        <div>
+                          <dt>Role</dt>
+                          <dd>{String(stats.profile.current_role || "—")}</dd>
+                        </div>
+                        <div>
+                          <dt>Experience</dt>
+                          <dd>{String(stats.profile.yoe || "—")}</dd>
+                        </div>
+                        <div>
+                          <dt>Email</dt>
+                          <dd>
+                            {stats.profile.email ? (
+                              <a href={`mailto:${String(stats.profile.email)}`}>{String(stats.profile.email)}</a>
+                            ) : (
+                              "—"
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Phone</dt>
+                          <dd>
+                            {stats.profile.phone ? (
+                              <a href={`tel:${String(stats.profile.phone).replace(/\s+/g, "")}`}>
+                                {String(stats.profile.phone)}
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Immediate joiner</dt>
+                          <dd>{immediateJoiner ? "Yes" : "No"}</dd>
+                        </div>
+                        <div className="profile-readout-span">
+                          <dt>Skills</dt>
+                          <dd>{skillList.length ? skillList.join(", ") : "—"}</dd>
+                        </div>
+                        <div className="profile-readout-span">
+                          <dt>Resume link</dt>
+                          <dd>
+                            {stats.profile.resume_link ? (
+                              <a href={String(stats.profile.resume_link)} target="_blank" rel="noreferrer">
+                                {String(stats.profile.resume_link)}
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Resume file</dt>
+                          <dd>
+                            {hasResumeFile
+                              ? String(stats.profile.resume_filename || "Saved file")
+                              : "Missing — re-upload to attach to emails"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>File type</dt>
+                          <dd>{hasResumeFile ? String(stats.profile.resume_mime || "—") : "—"}</dd>
+                        </div>
+                        <div className="profile-readout-span">
+                          <dt>Last updated</dt>
+                          <dd>
+                            {stats.profile.updated_at
+                              ? formatDateTime(String(stats.profile.updated_at))
+                              : "—"}
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
                   </>
                 )}
@@ -2731,7 +2858,15 @@ export default function Home() {
           {!busy && toastKind === "success" ? <span className="toast-icon" aria-hidden>✓</span> : null}
           {!busy && toastKind === "error" ? <span className="toast-icon" aria-hidden>!</span> : null}
           <span className="toast-message">{status}</span>
-          {!busy ? (
+          {sending ? (
+            <button
+              type="button"
+              className="toast-stop"
+              onClick={stopSending}
+            >
+              Stop
+            </button>
+          ) : !busy ? (
             <button
               type="button"
               className="toast-dismiss"

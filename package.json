@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "for f in test/*.check.ts; do echo \"== $f\"; node --import tsx \"$f\" || exit 1; done",
     "migrate:sqlite": "MIGRATE_CLEAR=1 node scripts/migrate-sqlite-to-supabase.mjs"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 /**
  * ponytail: deleting a draft must not return the post to Step 2 Pending.
- * Run: npx tsx lib/draft-delete-skip.check.ts
+ * Run: npm test / npx tsx test/draft-delete-skip.check.ts
  */
 function skipReasonAfterDraftDelete(status: string) {
   return status === "sent" ? "Previously sent" : "Draft deleted";

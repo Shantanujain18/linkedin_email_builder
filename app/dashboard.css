@@ -805,6 +805,32 @@ body:has(.auth-loading) {
   background: transparent;
 }
 
+.toast-stop {
+  flex-shrink: 0;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.app-shell button.toast-stop {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  padding: 6px 10px;
+  box-shadow: none;
+}
+
+.app-shell button.toast-stop:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
+}
+
 @keyframes toast-spin {
   to { transform: rotate(360deg); }
 }
@@ -1157,7 +1183,52 @@ label.field-label,
   font-family: var(--mono);
   font-size: 11px;
   color: #c9d1e0;
-  line-height: 1.7;
+  line-height: 1.5;
+}
+
+.profile-readout-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+}
+
+.profile-readout-grid > div {
+  min-width: 0;
+}
+
+.profile-readout-span {
+  grid-column: 1 / -1;
+}
+
+.profile-readout dt {
+  margin: 0 0 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5b6a8a;
+}
+
+.profile-readout dd {
+  margin: 0;
+  color: #e8ecf4;
+  word-break: break-word;
+}
+
+.profile-readout a {
+  color: #8b9cff;
+  text-decoration: none;
+}
+
+.profile-readout a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .profile-readout-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .profile-readout strong {

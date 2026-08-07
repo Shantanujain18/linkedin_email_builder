@@ -1,6 +1,6 @@
 /**
  * ponytail: extension version gate must accept newer installs (semver >=).
- * Run: npx tsx lib/extension-version.check.ts
+ * Run: npm test / npx tsx test/extension-version.check.ts
  */
 function normalizeExtensionVersion(value: string | null | undefined) {
   return String(value || "")

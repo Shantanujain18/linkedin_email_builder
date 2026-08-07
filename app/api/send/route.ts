@@ -3,7 +3,7 @@ import { isUser, requireUser } from "@/lib/auth";
 import {
   emailedTodaySet,
   getDraftsForSend,
-  getProfile,
+  getResumeAttachmentMeta,
   getSendQuota,
   getSmtpSettings,
   normalizeEmail,
@@ -11,18 +11,28 @@ import {
   repliedEmailSet,
   todayKey,
   updateDraftStatus,
-  wasEmailedToday
+  updateDraftStatuses
 } from "@/lib/db";
-import { sendMail } from "@/lib/mail";
+import { createMailTransport, sendMailWith } from "@/lib/mail";
+import {
+  claimSendEmail,
+  mapPool,
+  prefilterDraftsForSend,
+  releaseSendEmailClaim,
+  remainingAfterBatch,
+  selectSendWork,
+  sendFetchLimit
+} from "@/lib/send-batch";
 import { downloadResume } from "@/lib/storage";
 
 export const runtime = "nodejs";
 /** Best-effort; Hobby still caps lower. Client batches keep each request short. */
 export const maxDuration = 60;
 
-/** Keep small so one request fits Vercel free/Hobby timeouts (~10s). */
-const DEFAULT_BATCH = 2;
+/** Keep modest so one request fits Vercel free/Hobby timeouts (~10s). */
+const DEFAULT_BATCH = 5;
 const MAX_BATCH = 5;
+const SEND_CONCURRENCY = 2;
 
 export async function POST(request: Request) {
   try {
@@ -30,11 +40,6 @@ export async function POST(request: Request) {
     if (!isUser(user)) return user;
 
     const body = await request.json().catch(() => ({}));
-    const smtp = await getSmtpSettings(user.id);
-    if (!smtp?.user || !smtp.pass) {
-      return NextResponse.json({ error: "Configure SMTP details (email + App Password) first." }, { status: 400 });
-    }
-
     const draftId = body.draftId != null ? Number(body.draftId) : null;
     const draftIds = Array.isArray(body.draftIds)
       ? body.draftIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
@@ -48,15 +53,27 @@ export async function POST(request: Request) {
       1,
       Math.min(MAX_BATCH, Math.floor(Number(body.limit) || DEFAULT_BATCH))
     );
+    const fetchLimit = sendFetchLimit(batchLimit);
 
-    const attachResume =
-      body.attach_resume === undefined ? smtp.attach_resume : Boolean(body.attach_resume);
+    const attachResumeRequested = body.attach_resume;
 
-    const drafts = await getDraftsForSend(user.id, {
-      all: sendAll,
-      draftIds,
-      draftId: sendAll || draftIds.length ? null : draftId
-    });
+    const [smtp, drafts, sendQuota, alreadyToday, repliedEmails, resumeMeta] = await Promise.all([
+      getSmtpSettings(user.id),
+      getDraftsForSend(user.id, {
+        all: sendAll,
+        draftIds,
+        draftId: sendAll || draftIds.length ? null : draftId,
+        fetchLimit
+      }),
+      getSendQuota(user.id),
+      emailedTodaySet(user.id),
+      repliedEmailSet(user.id),
+      getResumeAttachmentMeta(user.id)
+    ]);
+
+    if (!smtp?.user || !smtp.pass) {
+      return NextResponse.json({ error: "Configure SMTP details (email + App Password) first." }, { status: 400 });
+    }
 
     if (!drafts.length) {
       return NextResponse.json(
@@ -74,7 +91,6 @@ export async function POST(request: Request) {
       );
     }
 
-    const sendQuota = await getSendQuota(user.id);
     if (sendQuota.remaining <= 0) {
       return NextResponse.json(
         {
@@ -87,10 +103,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const profile = await getProfile(user.id);
+    const attachResume =
+      attachResumeRequested === undefined ? smtp.attach_resume : Boolean(attachResumeRequested);
+
     let attachment: { filename: string; content: Buffer; contentType?: string } | null = null;
     if (attachResume) {
-      const path = String(profile?.resume_path || "");
+      const path = String(resumeMeta?.resume_path || "");
       const downloaded = path ? await downloadResume(path) : null;
       if (!downloaded) {
         return NextResponse.json(
@@ -101,121 +119,101 @@ export async function POST(request: Request) {
         );
       }
       attachment = {
-        filename: String(profile?.resume_filename || "resume.pdf"),
+        filename: String(resumeMeta?.resume_filename || "resume.pdf"),
         content: downloaded.buffer,
-        contentType: String(profile?.resume_mime || downloaded.contentType || "") || undefined
+        contentType: String(resumeMeta?.resume_mime || downloaded.contentType || "") || undefined
       };
     }
 
     const day = todayKey();
-    const alreadyToday = await emailedTodaySet(user.id, day);
-    const repliedEmails = await repliedEmailSet(user.id);
     const sentThisRun = new Set<string>();
 
-    // Drop permanently unblockable rows before batching so `remaining` matches sendable drafts
-    // and Send-all cannot spin on the same skipped/replied/missing-email rows.
-    const eligible: typeof drafts = [];
-    const preSkipped: Array<{ id: number; status: string; email?: string; error?: string }> = [];
-    const preSkippedDrafts: Array<{ id: number; email: string; reason: string }> = [];
-    for (const draft of drafts) {
-      const email = normalizeEmail(draft.recipientEmail);
-      if (!email) {
-        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
-        preSkippedDrafts.push({ id: draft.id, email: draft.recipientEmail, reason: "Missing recipient email." });
-        preSkipped.push({ id: draft.id, status: "skipped", email: draft.recipientEmail });
-        continue;
-      }
-      if (draft.replied || repliedEmails.has(email)) {
-        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
-        preSkippedDrafts.push({
-          id: draft.id,
-          email,
-          reason: "Recipient marked as replied — automation blocked."
-        });
-        preSkipped.push({ id: draft.id, status: "skipped", email });
-        continue;
-      }
-      if (alreadyToday.has(email) || (await wasEmailedToday(user.id, email, day))) {
-        alreadyToday.add(email);
-        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
-        preSkippedDrafts.push({
-          id: draft.id,
-          email,
-          reason: "Already emailed this address today."
-        });
-        preSkipped.push({ id: draft.id, status: "skipped", email });
-        continue;
-      }
-      eligible.push(draft);
+    const { eligible, skipIds, preSkipped, preSkippedDrafts } = prefilterDraftsForSend(
+      drafts,
+      alreadyToday,
+      repliedEmails
+    );
+
+    if (skipIds.length) {
+      await updateDraftStatuses(user.id, skipIds, "skipped");
     }
 
-    const work = eligible.slice(0, batchLimit);
-    const remainingAfterSelect = Math.max(0, eligible.length - work.length);
+    const { work, remainingAfterSelect } = selectSendWork(eligible, batchLimit, sendQuota.remaining);
 
     let sent = 0;
     let skipped = preSkipped.length;
-    let limited = 0;
+    let failed = 0;
     const errors: Array<{ id: number; error: string }> = [];
     const skippedDrafts = [...preSkippedDrafts];
     const results: Array<{ id: number; status: string; email?: string; error?: string }> = [...preSkipped];
-    let remainingSends = sendQuota.remaining;
 
-    for (const draft of work) {
+    const transporter = createMailTransport(smtp);
+
+    const outcomes = await mapPool(work, SEND_CONCURRENCY, async (draft) => {
       const email = normalizeEmail(draft.recipientEmail);
-      // Eligible was pre-filtered; only in-batch duplicate emails should hit this.
-      if (!email || alreadyToday.has(email) || sentThisRun.has(email)) {
-        skipped += 1;
-        const reason = !email ? "Missing recipient email." : "Already emailed this address today.";
-        skippedDrafts.push({ id: draft.id, email: email || draft.recipientEmail, reason });
-        if (draft.status !== "sent") await updateDraftStatus(user.id, draft.id, "skipped");
-        results.push({ id: draft.id, status: "skipped", email: email || draft.recipientEmail });
-        continue;
-      }
-
-      if (remainingSends <= 0) {
-        limited += 1;
-        skippedDrafts.push({
+      if (claimSendEmail(email, alreadyToday, sentThisRun) !== "ok") {
+        return {
           id: draft.id,
-          email,
-          reason: `Daily send limit reached (${sendQuota.daily_post_limit}/day).`
-        });
-        results.push({ id: draft.id, status: "limited", email });
-        continue;
+          email: email || draft.recipientEmail,
+          kind: "skipped" as const,
+          reason: !email ? "Missing recipient email." : "Already emailed this address today."
+        };
       }
 
       try {
-        await sendMail({
+        await sendMailWith(transporter, {
           smtp,
           to: draft.recipientEmail,
-          subject: draft.subject,
-          body: draft.body,
+          subject: draft.subject || "",
+          body: draft.body || "",
           attachment
         });
-        await updateDraftStatus(user.id, draft.id, "sent");
-        await recordEmailSent(user.id, email, draft.id, day);
-        alreadyToday.add(email);
-        sentThisRun.add(email);
-        sent += 1;
-        remainingSends -= 1;
-        results.push({ id: draft.id, status: "sent", email });
+        await Promise.all([
+          updateDraftStatus(user.id, draft.id, "sent"),
+          recordEmailSent(user.id, email, draft.id, day)
+        ]);
+        return { id: draft.id, email, kind: "sent" as const };
       } catch (error) {
+        releaseSendEmailClaim(email, alreadyToday, sentThisRun);
         const message = error instanceof Error ? error.message : "Send failed.";
         await updateDraftStatus(user.id, draft.id, "failed");
-        errors.push({ id: draft.id, error: message });
-        results.push({ id: draft.id, status: "failed", email, error: message });
+        return { id: draft.id, email, kind: "failed" as const, error: message };
       }
+    });
+
+    const postSkipIds: number[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.kind === "sent") {
+        sent += 1;
+        results.push({ id: outcome.id, status: "sent", email: outcome.email });
+      } else if (outcome.kind === "failed") {
+        failed += 1;
+        errors.push({ id: outcome.id, error: outcome.error });
+        results.push({ id: outcome.id, status: "failed", email: outcome.email, error: outcome.error });
+      } else {
+        skipped += 1;
+        skippedDrafts.push({ id: outcome.id, email: outcome.email, reason: outcome.reason });
+        postSkipIds.push(outcome.id);
+        results.push({ id: outcome.id, status: "skipped", email: outcome.email });
+      }
+    }
+    if (postSkipIds.length) {
+      await updateDraftStatuses(user.id, postSkipIds, "skipped");
     }
 
     const quotaAfter = await getSendQuota(user.id);
-    // If we hit the daily limit mid-batch, remaining unsent in this selection still need another run
-    // only if quota recovers — but drafts not in `work` are still remaining.
-    const remaining = remainingAfterSelect + limited;
+    const remaining = remainingAfterBatch({
+      sendAll,
+      fetched: drafts.length,
+      fetchLimit,
+      remainingAfterSelect
+    });
 
     return NextResponse.json({
       sent,
       skipped,
-      limited,
-      failed: errors.length,
+      limited: 0,
+      failed,
       errors,
       skipped_drafts: skippedDrafts,
       results,
