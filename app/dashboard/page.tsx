@@ -505,72 +505,84 @@ export default function Home() {
   const [postPageSize, setPostPageSize] = useState<PageSize>(25);
   const [postTotal, setPostTotal] = useState(0);
   const [draftTotal, setDraftTotal] = useState(0);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [draftsLoading, setDraftsLoading] = useState(true);
   const [postDateOptions, setPostDateOptions] = useState<string[]>([]);
   const [draftDateOptions, setDraftDateOptions] = useState<string[]>([]);
   const emailSetupInit = useRef(false);
 
   const loadPosts = useCallback(async () => {
-    const params = new URLSearchParams({
-      page: String(postPage),
-      pageSize: String(postPageSize),
-      filter: postFilter,
-      q: debouncedPostSearch,
-      date: postDateFilter
-    });
-    const response = await fetch(`/api/posts?${params}`, { cache: "no-store" });
-    if (response.status === 401) {
-      setUser(null);
-      setAuthReady(true);
-      router.replace("/login");
-      return;
-    }
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Failed to load posts.");
-    setStats((prev) => ({
-      ...prev,
-      posts: data.items || [],
-      counts: {
-        ...prev.counts,
-        posts: data.counts || prev.counts.posts
+    setPostsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(postPage),
+        pageSize: String(postPageSize),
+        filter: postFilter,
+        q: debouncedPostSearch,
+        date: postDateFilter
+      });
+      const response = await fetch(`/api/posts?${params}`, { cache: "no-store" });
+      if (response.status === 401) {
+        setUser(null);
+        setAuthReady(true);
+        router.replace("/login");
+        return;
       }
-    }));
-    setPostTotal(Number(data.total) || 0);
-    if (data.page && data.page !== postPage) setPostPage(Number(data.page));
-    setPostDateOptions(Array.isArray(data.dates) ? data.dates : []);
-    setSelectedPostIds((prev) => {
-      const existing = new Set((data.items || []).map((post: PostRow) => Number(post.id)));
-      return prev.filter((id) => existing.has(id));
-    });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load posts.");
+      setStats((prev) => ({
+        ...prev,
+        posts: data.items || [],
+        counts: {
+          ...prev.counts,
+          posts: data.counts || prev.counts.posts
+        }
+      }));
+      setPostTotal(Number(data.total) || 0);
+      if (data.page && data.page !== postPage) setPostPage(Number(data.page));
+      setPostDateOptions(Array.isArray(data.dates) ? data.dates : []);
+      setSelectedPostIds((prev) => {
+        const existing = new Set((data.items || []).map((post: PostRow) => Number(post.id)));
+        return prev.filter((id) => existing.has(id));
+      });
+    } finally {
+      setPostsLoading(false);
+    }
   }, [postPage, postPageSize, postFilter, debouncedPostSearch, postDateFilter, router]);
 
   const loadDrafts = useCallback(async () => {
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      status: statusFilter,
-      q: debouncedSearch,
-      date: draftDateFilter
-    });
-    const response = await fetch(`/api/drafts?${params}`, { cache: "no-store" });
-    if (response.status === 401) {
-      setUser(null);
-      setAuthReady(true);
-      router.replace("/login");
-      return;
+    setDraftsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        status: statusFilter,
+        q: debouncedSearch,
+        date: draftDateFilter
+      });
+      const response = await fetch(`/api/drafts?${params}`, { cache: "no-store" });
+      if (response.status === 401) {
+        setUser(null);
+        setAuthReady(true);
+        router.replace("/login");
+        return;
+      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load drafts.");
+      setStats((prev) => ({
+        ...prev,
+        drafts: data.items || []
+      }));
+      setDraftTotal(Number(data.total) || 0);
+      if (data.page && data.page !== page) setPage(Number(data.page));
+      setDraftDateOptions(Array.isArray(data.dates) ? data.dates : []);
+      setSelectedIds((prev) => {
+        const existing = new Set((data.items || []).map((draft: Draft) => draft.id));
+        return prev.filter((id) => existing.has(id));
+      });
+    } finally {
+      setDraftsLoading(false);
     }
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Failed to load drafts.");
-    setStats((prev) => ({
-      ...prev,
-      drafts: data.items || []
-    }));
-    setDraftTotal(Number(data.total) || 0);
-    if (data.page && data.page !== page) setPage(Number(data.page));
-    setDraftDateOptions(Array.isArray(data.dates) ? data.dates : []);
-    setSelectedIds((prev) => {
-      const existing = new Set((data.items || []).map((draft: Draft) => draft.id));
-      return prev.filter((id) => existing.has(id));
-    });
   }, [page, pageSize, statusFilter, debouncedSearch, draftDateFilter, router]);
 
   async function refresh() {
@@ -958,33 +970,101 @@ export default function Home() {
     refreshAll();
   }
 
-  async function toggleCalled(draft: Draft, called: boolean) {
-    setBusy(true); showStatus(called ? "Marking as called…" : "Clearing called mark…");
-    const response = await fetch("/api/drafts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: draft.id, called })
+  function patchDraftLocal(draftId: number, patch: Partial<Draft>) {
+    setStats((prev) => ({
+      ...prev,
+      drafts: prev.drafts.map((item) => (item.id === draftId ? { ...item, ...patch } : item))
+    }));
+  }
+
+  function applyDraftFlagCounts(before: Draft, after: Partial<Draft>) {
+    const wasReplied = Boolean(before.replied);
+    const nowReplied = after.replied == null ? wasReplied : Boolean(after.replied);
+    if (wasReplied === nowReplied) return;
+
+    setStats((prev) => {
+      const drafts = { ...prev.counts.drafts };
+      const wasUnsent =
+        before.status !== "sent" && before.status !== "skipped" && !wasReplied;
+      const nowUnsent =
+        (after.status ?? before.status) !== "sent" &&
+        (after.status ?? before.status) !== "skipped" &&
+        !nowReplied;
+
+      if (wasReplied && !nowReplied) drafts.replied = Math.max(0, drafts.replied - 1);
+      if (!wasReplied && nowReplied) drafts.replied += 1;
+      if (wasUnsent && !nowUnsent) drafts.unsent = Math.max(0, drafts.unsent - 1);
+      if (!wasUnsent && nowUnsent) drafts.unsent += 1;
+
+      return { ...prev, counts: { ...prev.counts, drafts } };
     });
-    const data = await response.json(); setBusy(false);
-    showStatus(data.error || (called ? "Marked as called." : "Call mark cleared."));
-    if (response.ok) refreshAll();
+  }
+
+  async function toggleCalled(draft: Draft, called: boolean) {
+    const previous = { called: Boolean(draft.called), called_at: draft.called_at || "" };
+    const optimistic = {
+      called,
+      called_at: called ? new Date().toISOString() : ""
+    };
+    patchDraftLocal(draft.id, optimistic);
+
+    try {
+      const response = await fetch("/api/drafts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: draft.id, called })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Failed to update called mark.");
+      if (data.draft) {
+        patchDraftLocal(draft.id, {
+          called: Boolean(data.draft.called),
+          called_at: String(data.draft.called_at || "")
+        });
+      }
+      showStatus(called ? "Marked as called." : "Call mark cleared.");
+    } catch (error) {
+      patchDraftLocal(draft.id, previous);
+      showStatus(error instanceof Error ? error.message : "Failed to update called mark.");
+    }
   }
 
   async function toggleReplied(draft: Draft, replied: boolean) {
-    setBusy(true); showStatus(replied ? "Marking as replied…" : "Clearing replied mark…");
-    const response = await fetch("/api/drafts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: draft.id, replied })
-    });
-    const data = await response.json(); setBusy(false);
-    showStatus(
-      data.error ||
-        (replied
+    const previous = {
+      replied: Boolean(draft.replied),
+      replied_at: draft.replied_at || ""
+    };
+    const optimistic = {
+      replied,
+      replied_at: replied ? new Date().toISOString() : ""
+    };
+    patchDraftLocal(draft.id, optimistic);
+    applyDraftFlagCounts(draft, optimistic);
+
+    try {
+      const response = await fetch("/api/drafts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: draft.id, replied })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Failed to update replied mark.");
+      if (data.draft) {
+        patchDraftLocal(draft.id, {
+          replied: Boolean(data.draft.replied),
+          replied_at: String(data.draft.replied_at || "")
+        });
+      }
+      showStatus(
+        replied
           ? "Marked as replied. Automation will not email this address again."
-          : "Replied mark cleared.")
-    );
-    if (response.ok) refreshAll();
+          : "Replied mark cleared."
+      );
+    } catch (error) {
+      patchDraftLocal(draft.id, previous);
+      applyDraftFlagCounts({ ...draft, ...optimistic }, previous);
+      showStatus(error instanceof Error ? error.message : "Failed to update replied mark.");
+    }
   }
 
   async function addNote(event: React.FormEvent) {
@@ -1747,7 +1827,12 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {postTotal === 0 ? (
+                  {postsLoading && postTotal === 0 ? (
+                    <div className="empty-state" style={{ marginTop: 12 }} aria-busy="true">
+                      <span className="toast-spinner" aria-hidden />
+                      <p>Loading posts…</p>
+                    </div>
+                  ) : postTotal === 0 ? (
                     <div className="info-note" style={{ marginTop: 12 }}>
                       {postSearch.trim() || postFilter !== "all" || postDateFilter
                         ? "No posts match your search or filter."
@@ -2242,7 +2327,12 @@ export default function Home() {
                 </div>
               </div>
 
-              {draftTotal === 0 ? (
+              {draftsLoading && draftTotal === 0 ? (
+                <div className="empty-state" aria-busy="true">
+                  <span className="toast-spinner" aria-hidden />
+                  <p>Loading drafts…</p>
+                </div>
+              ) : draftTotal === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">∅</div>
                   <p>
