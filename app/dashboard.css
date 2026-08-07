@@ -553,9 +553,37 @@ body:has(.auth-loading) {
   margin-top: 14px;
 }
 
+.pagination-enterprise {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #1c1f2e;
+  border-radius: 8px;
+  background: #0a0c14;
+}
+
+.pagination-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
 .pagination-meta {
   font-size: 12px;
+  color: #8b9fbf;
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
   color: #5b6a8a;
+}
+
+.pagination-size-select {
+  min-width: 72px;
 }
 
 .table-count {
@@ -567,29 +595,51 @@ body:has(.auth-loading) {
 .pagination-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
-.page-btn {
-  height: auto;
-  padding: 6px 12px;
-  background: #0a0c14;
-  border: 1px solid #1c1f2e;
+.app-shell button.page-btn {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid #252840;
   color: #9ca3af;
   border-radius: 5px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
+  box-shadow: none;
 }
 
-.page-btn:hover:not(:disabled) {
-  border-color: #4f6ef7;
+.app-shell button.page-btn:hover:not(:disabled) {
+  border-color: #3a4566;
   color: #e5e7eb;
-  background: #0a0c14;
+  background: #121526;
 }
 
-.page-btn:disabled {
+.app-shell button.page-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.app-shell button.page-btn.page-num.current {
+  background: #1a2240;
+  border-color: #4f6ef7;
+  color: #c5d0e6;
+}
+
+.app-shell button.page-btn.page-num.current:hover:not(:disabled) {
+  background: #1a2240;
+  border-color: #4f6ef7;
+  color: #c5d0e6;
+}
+
+.page-ellipsis {
+  min-width: 24px;
+  text-align: center;
+  color: #5b6a8a;
+  font-size: 12px;
+  user-select: none;
 }
 
 .page-pill {
@@ -1277,8 +1327,23 @@ label.field-label,
   width: 100%;
 }
 
+.leads-posts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.leads-posts-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .leads-posts-table {
-  min-width: 1100px;
+  min-width: 1180px;
 }
 
 .leads-posts-table td.col-snippet {
@@ -1288,11 +1353,17 @@ label.field-label,
   line-height: 1.45;
 }
 
-.leads-posts-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+.leads-posts-table .actions-cell .leads-posts-actions {
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.draft-table .link-btn.link-btn-danger {
+  color: #f87171;
+}
+
+.draft-table .link-btn.link-btn-danger:hover:not(:disabled) {
+  color: #fca5a5;
 }
 
 /* Beat .app-shell a { color: var(--primary) } so snippets/authors aren't blue. */

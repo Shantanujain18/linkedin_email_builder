@@ -2,11 +2,9 @@ import { NextResponse } from "next/server";
 import { isUser, requireUser } from "@/lib/auth";
 import {
   getAllDailyQuotas,
-  getNotesByDraftIds,
-  getPosts,
   getPublicProfile,
   getPublicSmtpSettings,
-  listDrafts
+  getWorkspaceCounts
 } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -15,22 +13,18 @@ export async function GET() {
   const user = await requireUser();
   if (!isUser(user)) return user;
 
-  const rows = await listDrafts(user.id);
-  const notesByDraft = await getNotesByDraftIds(rows.map((row) => Number(row.id)));
-
-  const drafts = rows.map((draft) => ({
-    ...draft,
-    called: Boolean(draft.called),
-    replied: Boolean(draft.replied),
-    notes: notesByDraft[Number(draft.id)] || []
-  }));
+  const profile = await getPublicProfile(user.id);
+  const topSkills = String((profile as Record<string, unknown> | null)?.top_skills || "");
+  const counts = await getWorkspaceCounts(user.id, topSkills);
 
   return NextResponse.json({
     user: { id: user.id, email: user.email, name: user.name },
-    profile: await getPublicProfile(user.id),
-    posts: await getPosts(user.id),
-    drafts,
+    profile,
     smtp: await getPublicSmtpSettings(user.id),
-    quota: await getAllDailyQuotas(user.id)
+    quota: await getAllDailyQuotas(user.id),
+    counts: {
+      posts: counts.posts,
+      drafts: counts.drafts
+    }
   });
 }

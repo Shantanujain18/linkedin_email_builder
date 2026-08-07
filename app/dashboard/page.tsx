@@ -1,9 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EXTENSION } from "@/lib/constants";
-import { evaluateSkillFit } from "@/lib/skills";
+import type { PostDraftOutcome, PostFilter } from "@/lib/post-draft-status";
 
 type DraftNote = {
   id: number;
@@ -70,45 +70,46 @@ type QuotaBundle = {
   send: DailyQuota;
 };
 
+type PostRow = Record<string, string | number> & {
+  draft_status?: PostDraftOutcome;
+};
+
+type WorkspaceCounts = {
+  posts: {
+    total: number;
+    valid: number;
+    invalid: number;
+    pending: number;
+    drafted: number;
+    skipped: number;
+  };
+  drafts: {
+    total: number;
+    unsent: number;
+    draft: number;
+    sent: number;
+    skipped: number;
+    replied: number;
+  };
+};
+
 type Stats = {
   profile: Record<string, string | boolean | number> | null;
-  posts: Array<Record<string, string | number>>;
+  posts: PostRow[];
   drafts: Draft[];
   smtp: Smtp;
   quota: QuotaBundle | null;
+  counts: WorkspaceCounts;
 };
 
 type PageId = "profile" | "leads" | "send";
 type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped" | "replied";
-type PageSize = 25 | 50 | 100;
-type PostFilter = "all" | "valid" | "invalid" | "drafted" | "skipped" | "pending";
+type PageSize = 10 | 25 | 50 | 100;
 
-function postDraftStatus(
-  post: Record<string, string | number>,
-  draftedPostIds: Set<number>,
-  topSkills: string
-) {
-  if (draftedPostIds.has(Number(post.id))) {
-    return { kind: "drafted" as const, label: "Drafted", reason: "" };
-  }
-  const emails = parsePostEmails(post.emails_json);
-  if (!emails.length) {
-    return { kind: "none" as const, label: "—", reason: "No email in post" };
-  }
-  const storedSkip = String(post.draft_skip_reason || "").trim();
-  if (storedSkip) {
-    return { kind: "skipped" as const, label: "Skipped", reason: storedSkip };
-  }
-  const fit = evaluateSkillFit(topSkills, String(post.posted_content || ""));
-  if (!fit.ok) {
-    return { kind: "skipped" as const, label: "Skipped", reason: fit.reason };
-  }
-  return {
-    kind: "pending" as const,
-    label: "Pending",
-    reason: "Skill match OK — use Write email on this row, or Write pending emails for all."
-  };
-}
+const emptyCounts: WorkspaceCounts = {
+  posts: { total: 0, valid: 0, invalid: 0, pending: 0, drafted: 0, skipped: 0 },
+  drafts: { total: 0, unsent: 0, draft: 0, sent: 0, skipped: 0, replied: 0 }
+};
 
 const PAGES: Array<{ id: PageId; label: string; step: number }> = [
   { id: "profile", label: "Your profile", step: 1 },
@@ -201,21 +202,136 @@ function parsePostPhones(phonesJson: unknown): string[] {
   }
 }
 
-function postSortRank(
-  outcome: { kind: string } | undefined,
-  valid: boolean
-) {
-  if (outcome?.kind === "pending") return 0;
-  if (outcome?.kind === "drafted") return 1;
-  if (valid && outcome?.kind === "skipped") return 2;
-  if (valid) return 3;
-  return 4;
-}
-
 function truncateText(value: string, max = 120) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text || "—";
   return `${text.slice(0, max - 1)}…`;
+}
+
+/** Compact page window for enterprise pagination: 1 … 4 5 6 … 20 */
+function paginationItems(current: number, total: number): Array<number | "gap"> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const set = new Set<number>([1, total, current, current - 1, current + 1]);
+  if (current <= 3) {
+    set.add(2);
+    set.add(3);
+    set.add(4);
+  }
+  if (current >= total - 2) {
+    set.add(total - 1);
+    set.add(total - 2);
+    set.add(total - 3);
+  }
+  const sorted = [...set].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b);
+  const out: Array<number | "gap"> = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) out.push("gap");
+    out.push(sorted[i]);
+  }
+  return out;
+}
+
+function TablePagination({
+  page,
+  totalPages,
+  pageStart,
+  pageEnd,
+  total,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+  noun = "results"
+}: {
+  page: number;
+  totalPages: number;
+  pageStart: number;
+  pageEnd: number;
+  total: number;
+  pageSize: PageSize;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: PageSize) => void;
+  noun?: string;
+}) {
+  const items = paginationItems(page, totalPages);
+  return (
+    <div className="pagination pagination-enterprise">
+      <div className="pagination-left">
+        <span className="pagination-meta">
+          {total === 0 ? `0 ${noun}` : `${pageStart}–${pageEnd} of ${total.toLocaleString()} ${noun}`}
+        </span>
+        <label className="pagination-size">
+          <span>Rows per page</span>
+          <select
+            className="toolbar-select pagination-size-select"
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value) as PageSize)}
+            aria-label="Rows per page"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </label>
+      </div>
+      <div className="pagination-controls" role="navigation" aria-label="Pagination">
+        <button
+          type="button"
+          className="page-btn"
+          disabled={page <= 1}
+          onClick={() => onPageChange(1)}
+          aria-label="First page"
+        >
+          «
+        </button>
+        <button
+          type="button"
+          className="page-btn"
+          disabled={page <= 1}
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          aria-label="Previous page"
+        >
+          ‹
+        </button>
+        {items.map((item, index) =>
+          item === "gap" ? (
+            <span key={`gap-${index}`} className="page-ellipsis" aria-hidden>
+              …
+            </span>
+          ) : (
+            <button
+              key={item}
+              type="button"
+              className={`page-btn page-num${item === page ? " current" : ""}`}
+              aria-current={item === page ? "page" : undefined}
+              aria-label={`Page ${item}`}
+              onClick={() => onPageChange(item)}
+            >
+              {item}
+            </button>
+          )
+        )}
+        <button
+          type="button"
+          className="page-btn"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          aria-label="Next page"
+        >
+          ›
+        </button>
+        <button
+          type="button"
+          className="page-btn"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+          aria-label="Last page"
+        >
+          »
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function QuotaMeter({
@@ -340,7 +456,8 @@ export default function Home() {
     posts: [],
     drafts: [],
     smtp: defaultSmtp,
-    quota: null
+    quota: null,
+    counts: emptyCounts
   });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -361,21 +478,92 @@ export default function Home() {
   });
   const [bulkAttachResume, setBulkAttachResume] = useState(true);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [selectedPostIds, setSelectedPostIds] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ recipient_email: "", subject: "", body: "" });
   const [noteText, setNoteText] = useState("");
-  const [pageSize, setPageSize] = useState<PageSize>(25);
+  const [pageSize, setPageSize] = useState<PageSize>(10);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [postFilter, setPostFilter] = useState<PostFilter>("all");
   const [postSearch, setPostSearch] = useState("");
+  const [debouncedPostSearch, setDebouncedPostSearch] = useState("");
   const [postDateFilter, setPostDateFilter] = useState("");
   const [draftDateFilter, setDraftDateFilter] = useState("");
   const [postPage, setPostPage] = useState(1);
   const [postPageSize, setPostPageSize] = useState<PageSize>(25);
+  const [postTotal, setPostTotal] = useState(0);
+  const [draftTotal, setDraftTotal] = useState(0);
+  const [postDateOptions, setPostDateOptions] = useState<string[]>([]);
+  const [draftDateOptions, setDraftDateOptions] = useState<string[]>([]);
   const emailSetupInit = useRef(false);
+
+  const loadPosts = useCallback(async () => {
+    const params = new URLSearchParams({
+      page: String(postPage),
+      pageSize: String(postPageSize),
+      filter: postFilter,
+      q: debouncedPostSearch,
+      date: postDateFilter
+    });
+    const response = await fetch(`/api/posts?${params}`, { cache: "no-store" });
+    if (response.status === 401) {
+      setUser(null);
+      setAuthReady(true);
+      router.replace("/login");
+      return;
+    }
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load posts.");
+    setStats((prev) => ({
+      ...prev,
+      posts: data.items || [],
+      counts: {
+        ...prev.counts,
+        posts: data.counts || prev.counts.posts
+      }
+    }));
+    setPostTotal(Number(data.total) || 0);
+    if (data.page && data.page !== postPage) setPostPage(Number(data.page));
+    setPostDateOptions(Array.isArray(data.dates) ? data.dates : []);
+    setSelectedPostIds((prev) => {
+      const existing = new Set((data.items || []).map((post: PostRow) => Number(post.id)));
+      return prev.filter((id) => existing.has(id));
+    });
+  }, [postPage, postPageSize, postFilter, debouncedPostSearch, postDateFilter, router]);
+
+  const loadDrafts = useCallback(async () => {
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      status: statusFilter,
+      q: debouncedSearch,
+      date: draftDateFilter
+    });
+    const response = await fetch(`/api/drafts?${params}`, { cache: "no-store" });
+    if (response.status === 401) {
+      setUser(null);
+      setAuthReady(true);
+      router.replace("/login");
+      return;
+    }
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load drafts.");
+    setStats((prev) => ({
+      ...prev,
+      drafts: data.items || []
+    }));
+    setDraftTotal(Number(data.total) || 0);
+    if (data.page && data.page !== page) setPage(Number(data.page));
+    setDraftDateOptions(Array.isArray(data.dates) ? data.dates : []);
+    setSelectedIds((prev) => {
+      const existing = new Set((data.items || []).map((draft: Draft) => draft.id));
+      return prev.filter((id) => existing.has(id));
+    });
+  }, [page, pageSize, statusFilter, debouncedSearch, draftDateFilter, router]);
 
   async function refresh() {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -389,13 +577,17 @@ export default function Home() {
     if (!response.ok) throw new Error(data.error || "Failed to load workspace.");
     if (data.user) setUser(data.user);
     const smtp = data.smtp || defaultSmtp;
-    setStats({
+    const nextCounts: WorkspaceCounts = {
+      posts: data.counts?.posts || emptyCounts.posts,
+      drafts: data.counts?.drafts || emptyCounts.drafts
+    };
+    setStats((prev) => ({
+      ...prev,
       profile: data.profile || null,
-      posts: data.posts || [],
-      drafts: data.drafts || [],
       smtp,
-      quota: data.quota || null
-    });
+      quota: data.quota || null,
+      counts: nextCounts
+    }));
     setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
     setSkillList(parseSkills(String(data.profile?.top_skills || "")));
     setBulkAttachResume(smtp.attach_resume !== false);
@@ -412,17 +604,43 @@ export default function Home() {
       from_name: smtp.from_name || "",
       attach_resume: smtp.attach_resume !== false
     }));
-    setSelectedIds((prev) => {
-      const existing = new Set((data.drafts || []).map((draft: Draft) => draft.id));
-      return prev.filter((id) => existing.has(id));
-    });
     setAuthReady(true);
   }
+
+  async function refreshAll() {
+    await refresh();
+    await Promise.all([loadPosts(), loadDrafts()]);
+  }
+
   useEffect(() => { refresh().catch(() => { setAuthReady(true); router.replace("/login"); }); }, []);
 
   useEffect(() => {
-    const page = new URLSearchParams(window.location.search).get("page");
-    if (page === "profile" || page === "leads" || page === "send") setCurrentPage(page);
+    const timer = setTimeout(() => setDebouncedPostSearch(postSearch), 300);
+    return () => clearTimeout(timer);
+  }, [postSearch]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    loadPosts().catch((error) => {
+      setStatus(error instanceof Error ? error.message : "Failed to load posts.");
+    });
+  }, [authReady, loadPosts]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    loadDrafts().catch((error) => {
+      setStatus(error instanceof Error ? error.message : "Failed to load drafts.");
+    });
+  }, [authReady, loadDrafts]);
+
+  useEffect(() => {
+    const pageParam = new URLSearchParams(window.location.search).get("page");
+    if (pageParam === "profile" || pageParam === "leads" || pageParam === "send") setCurrentPage(pageParam);
   }, []);
 
   async function signOut() {
@@ -478,7 +696,7 @@ export default function Home() {
     const form = new FormData(event.currentTarget);
     const response = await fetch("/api/resume", { method: "POST", body: form });
     const data = await response.json(); setBusy(false); showStatus(data.error || "Candidate profile saved.");
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
   }
 
   async function persistSkills(nextSkills: string[]) {
@@ -492,7 +710,7 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     showStatus(data.error || "Skills updated. Regenerate drafts to use them in new emails.");
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
     else setSkillList(parseSkills(String(stats.profile.top_skills || "")));
   }
 
@@ -530,7 +748,7 @@ export default function Home() {
           ? "Marked as immediate joiner. Regenerate drafts to include it in emails."
           : "Immediate joiner turned off. Regenerate drafts if needed.")
     );
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
     else setImmediateJoiner(!checked);
   }
 
@@ -546,7 +764,7 @@ export default function Home() {
     if (data.truncated) parts.push(`${data.truncated} skipped (daily import limit)`);
     if (data.quota) parts.push(`${data.quota.remaining} import slots left today`);
     showStatus(parts.join(" · ") + ".");
-    refresh();
+    refreshAll();
   }
 
   async function generate(postIds?: number[]) {
@@ -616,7 +834,7 @@ export default function Home() {
         if (skippedTotal) parts.push(`${skippedTotal} skipped`);
         showStatus(parts.join(" · ") + ".");
       }
-      await refresh();
+      await refreshAll();
     } catch (error) {
       showStatus(error instanceof Error ? error.message : "Draft generation failed.");
     } finally {
@@ -632,7 +850,7 @@ export default function Home() {
     showStatus(data.error || `Cleared ${data.deleted || 0} drafts.`);
     if (response.ok) {
       setSelectedIds([]);
-      refresh();
+      refreshAll();
     }
   }
 
@@ -650,7 +868,7 @@ export default function Home() {
     if (response.ok) {
       setSelectedIds([]);
       cancelEdit();
-      refresh();
+      refreshAll();
     }
   }
 
@@ -676,7 +894,7 @@ export default function Home() {
       setSmtpForm((prev) => ({ ...prev, pass: "" }));
       setBulkAttachResume(smtpForm.attach_resume);
       setEmailSetupOpen(false);
-      refresh();
+      refreshAll();
     }
   }
 
@@ -722,7 +940,7 @@ export default function Home() {
     }
     showStatus("Draft updated.");
     cancelEdit();
-    refresh();
+    refreshAll();
   }
 
   async function toggleCalled(draft: Draft, called: boolean) {
@@ -734,7 +952,7 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     showStatus(data.error || (called ? "Marked as called." : "Call mark cleared."));
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
   }
 
   async function toggleReplied(draft: Draft, replied: boolean) {
@@ -751,7 +969,7 @@ export default function Home() {
           ? "Marked as replied. Automation will not email this address again."
           : "Replied mark cleared.")
     );
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
   }
 
   async function addNote(event: React.FormEvent) {
@@ -770,7 +988,7 @@ export default function Home() {
     }
     setNoteText("");
     showStatus("Note added.");
-    refresh();
+    refreshAll();
   }
 
   async function removeNote(noteId: number) {
@@ -783,7 +1001,7 @@ export default function Home() {
     });
     const data = await response.json(); setBusy(false);
     showStatus(data.error || "Note deleted.");
-    if (response.ok) refresh();
+    if (response.ok) refreshAll();
   }
 
   function toggleSelected(id: number, checked: boolean) {
@@ -935,123 +1153,115 @@ export default function Home() {
       if (attachedResume) parts.push("resume attached");
       if (lastQuota) parts.push(`${lastQuota.remaining} sends left today`);
       showStatus(parts.join(" · ") + ".");
+      await refreshAll();
     } finally {
       setBusy(false);
     }
   }
 
-  const postsWithEmail = stats.posts.filter((post) => parsePostEmails(post.emails_json).length > 0).length;
-  const postsWithoutEmail = Math.max(0, stats.posts.length - postsWithEmail);
-  const draftedPostIds = useMemo(() => {
-    const ids = new Set<number>();
-    for (const draft of stats.drafts) {
-      const postId = Number(draft.post_id);
-      if (Number.isFinite(postId) && postId > 0) ids.add(postId);
-    }
-    return ids;
-  }, [stats.drafts]);
-  const postsDrafted = stats.posts.filter((post) => draftedPostIds.has(Number(post.id))).length;
-  const topSkills = String(stats.profile?.top_skills || "");
-  const postOutcomes = useMemo(() => {
-    const map = new Map<number, ReturnType<typeof postDraftStatus>>();
-    for (const post of stats.posts) {
-      map.set(Number(post.id), postDraftStatus(post, draftedPostIds, topSkills));
-    }
-    return map;
-  }, [stats.posts, draftedPostIds, topSkills]);
-  const postsSkipped = [...postOutcomes.values()].filter((item) => item.kind === "skipped").length;
-  const postsPendingDraft = [...postOutcomes.values()].filter((item) => item.kind === "pending").length;
-  const pendingPostIds = useMemo(
-    () =>
-      stats.posts
-        .filter((post) => postOutcomes.get(Number(post.id))?.kind === "pending")
-        .map((post) => Number(post.id)),
-    [stats.posts, postOutcomes]
-  );
+  const postsWithEmail = stats.counts.posts.valid;
+  const postsWithoutEmail = stats.counts.posts.invalid;
+  const postsDrafted = stats.counts.posts.drafted;
+  const postsSkipped = stats.counts.posts.skipped;
+  const postsPendingDraft = stats.counts.posts.pending;
 
   async function generatePending() {
-    if (!pendingPostIds.length) {
+    if (!postsPendingDraft) {
       showStatus("No pending posts to draft.");
       return;
     }
-    await generate(pendingPostIds);
+    setBusy(true);
+    let createdTotal = 0;
+    let skippedTotal = 0;
+    try {
+      let guard = 0;
+      let remaining = 1;
+      while (remaining > 0 && guard < 50) {
+        guard += 1;
+        showStatus(
+          remaining > 1
+            ? `Writing pending emails… ${createdTotal} created · ~${remaining} still pending`
+            : `Writing pending emails… ${createdTotal} created · finishing…`
+        );
+        const response = await fetch("/api/drafts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingOnly: true })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          showStatus(data.error || "Draft generation failed.");
+          return;
+        }
+        createdTotal += Number(data.created) || 0;
+        skippedTotal += Number(data.skipped) || 0;
+        remaining = Number(data.remaining) || 0;
+        if (!(Number(data.pending) > 0) && remaining <= 0) break;
+      }
+      const parts = [`Created ${createdTotal} draft${createdTotal === 1 ? "" : "s"}`];
+      if (skippedTotal) parts.push(`${skippedTotal} skipped`);
+      showStatus(parts.join(" · ") + ".");
+      await refreshAll();
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : "Draft generation failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function generateOne(postId: number) {
     await generate([postId]);
   }
 
-  const postDateOptions = useMemo(() => {
-    const days = new Set<string>();
-    for (const post of stats.posts) {
-      const day = toLocalDay(String(post.created_at || ""));
-      if (day) days.add(day);
-    }
-    return [...days].sort((a, b) => b.localeCompare(a));
-  }, [stats.posts]);
-
-  const draftDateOptions = useMemo(() => {
-    const days = new Set<string>();
-    for (const draft of stats.drafts) {
-      const day = toLocalDay(draft.created_at);
-      if (day) days.add(day);
-    }
-    return [...days].sort((a, b) => b.localeCompare(a));
-  }, [stats.drafts]);
-
-  const filteredPosts = useMemo(() => {
-    const q = postSearch.trim().toLowerCase();
-    const filtered = stats.posts.filter((post) => {
-      const emails = parsePostEmails(post.emails_json);
-      const phones = parsePostPhones(post.phones_json);
-      const valid = emails.length > 0;
-      const outcome = postOutcomes.get(Number(post.id));
-      if (postFilter === "valid" && !valid) return false;
-      if (postFilter === "invalid" && valid) return false;
-      if (postFilter === "drafted" && outcome?.kind !== "drafted") return false;
-      if (postFilter === "skipped" && outcome?.kind !== "skipped") return false;
-      if (postFilter === "pending" && outcome?.kind !== "pending") return false;
-      if (postDateFilter && toLocalDay(String(post.created_at || "")) !== postDateFilter) return false;
-      if (!q) return true;
-      const haystack = [
-        post.posted_by,
-        post.posted_content,
-        post.posted_by_url,
-        post.post_url,
-        emails.join(" "),
-        phones.join(" "),
-        outcome?.label,
-        outcome?.reason
-      ]
-        .map((value) => String(value || "").toLowerCase())
-        .join(" ");
-      return haystack.includes(q);
+  async function deleteSelectedPosts() {
+    if (!selectedPostIds.length) return;
+    if (!window.confirm(`Delete ${selectedPostIds.length} selected post(s)? Linked drafts will also be removed.`)) return;
+    setBusy(true);
+    showStatus("Deleting selected posts…");
+    const response = await fetch("/api/posts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: selectedPostIds })
     });
+    const data = await response.json().catch(() => ({}));
+    setBusy(false);
+    showStatus(data.error || `Deleted ${data.deleted || 0} post(s).`);
+    if (response.ok) {
+      setSelectedPostIds([]);
+      await refreshAll();
+    }
+  }
 
-    // Valid+Pending first, then drafted, other valid, then invalid.
-    return filtered.sort((a, b) => {
-      const aValid = parsePostEmails(a.emails_json).length > 0;
-      const bValid = parsePostEmails(b.emails_json).length > 0;
-      const rank =
-        postSortRank(postOutcomes.get(Number(a.id)), aValid) -
-        postSortRank(postOutcomes.get(Number(b.id)), bValid);
-      if (rank !== 0) return rank;
-      return Number(b.id) - Number(a.id);
+  async function deleteOnePost(postId: number) {
+    if (!window.confirm("Delete this post? Any linked draft will also be removed.")) return;
+    setBusy(true);
+    showStatus("Deleting post…");
+    const response = await fetch("/api/posts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [postId] })
     });
-  }, [stats.posts, postOutcomes, postFilter, postSearch, postDateFilter]);
+    const data = await response.json().catch(() => ({}));
+    setBusy(false);
+    showStatus(data.error || `Deleted ${data.deleted || 0} post(s).`);
+    if (response.ok) {
+      setSelectedPostIds((prev) => prev.filter((id) => id !== postId));
+      await refreshAll();
+    }
+  }
 
-  const postTotalPages = Math.max(1, Math.ceil(filteredPosts.length / postPageSize));
+  const postTotalPages = Math.max(1, Math.ceil(postTotal / postPageSize) || 1);
   const safePostPage = Math.min(postPage, postTotalPages);
-  const postPageStart = filteredPosts.length === 0 ? 0 : (safePostPage - 1) * postPageSize + 1;
-  const postPageEnd = Math.min(safePostPage * postPageSize, filteredPosts.length);
-  const pagePosts = filteredPosts.slice((safePostPage - 1) * postPageSize, safePostPage * postPageSize);
+  const postPageStart = postTotal === 0 ? 0 : (safePostPage - 1) * postPageSize + 1;
+  const postPageEnd = Math.min(safePostPage * postPageSize, postTotal);
+  const pagePosts = stats.posts;
 
   useEffect(() => {
     if (postPage > postTotalPages) setPostPage(postTotalPages);
   }, [postPage, postTotalPages]);
 
   const postFilterOptions: Array<{ id: PostFilter; label: string; count: number }> = [
-    { id: "all", label: "All", count: stats.posts.length },
+    { id: "all", label: "All", count: stats.counts.posts.total },
     { id: "valid", label: "Valid", count: postsWithEmail },
     { id: "invalid", label: "Invalid", count: postsWithoutEmail },
     { id: "pending", label: "Pending", count: postsPendingDraft },
@@ -1059,8 +1269,8 @@ export default function Home() {
     { id: "skipped", label: "Skipped", count: postsSkipped }
   ];
 
-  const unsentCount = stats.drafts.filter(isUnsent).length;
-  const sentCount = stats.drafts.filter((draft) => draft.status === "sent").length;
+  const unsentCount = stats.counts.drafts.unsent;
+  const sentCount = stats.counts.drafts.sent;
   const importRemaining = stats.quota?.import?.remaining ?? null;
   const sendRemaining = stats.quota?.send?.remaining ?? null;
   const dailyLimit = stats.quota?.daily_post_limit ?? 50;
@@ -1074,35 +1284,19 @@ export default function Home() {
   const hasResumeFile = Boolean(stats.profile?.has_resume_file);
   const detailDraft = detailId == null ? null : stats.drafts.find((draft) => draft.id === detailId) || null;
 
-  const filteredDrafts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return stats.drafts.filter((draft) => {
-      if (statusFilter === "unsent" && !isUnsent(draft)) return false;
-      if (statusFilter === "draft" && (draft.status !== "draft" || draft.replied)) return false;
-      if (statusFilter === "sent" && draft.status !== "sent") return false;
-      if (statusFilter === "skipped" && draft.status !== "skipped") return false;
-      if (statusFilter === "replied" && !draft.replied) return false;
-      if (draftDateFilter && toLocalDay(draft.created_at) !== draftDateFilter) return false;
-      if (!q) return true;
-      const contact = `${draft.contact_name || ""} ${draft.recipient_name || ""}`.toLowerCase();
-      return (
-        String(draft.company || "").toLowerCase().includes(q) ||
-        String(draft.recipient_email || "").toLowerCase().includes(q) ||
-        contact.includes(q) ||
-        String(draft.subject || "").toLowerCase().includes(q) ||
-        String(draft.phone || "").toLowerCase().includes(q)
-      );
-    });
-  }, [stats.drafts, statusFilter, searchQuery, draftDateFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredDrafts.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(draftTotal / pageSize) || 1);
   const safePage = Math.min(page, totalPages);
-  const pageStart = filteredDrafts.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
-  const pageEnd = Math.min(safePage * pageSize, filteredDrafts.length);
-  const pageDrafts = filteredDrafts.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageStart = draftTotal === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const pageEnd = Math.min(safePage * pageSize, draftTotal);
+  const pageDrafts = stats.drafts;
   const pageIds = pageDrafts.map((draft) => draft.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
   const somePageSelected = pageIds.some((id) => selectedIds.includes(id)) && !allPageSelected;
+  const pagePostIds = pagePosts.map((post) => Number(post.id));
+  const allPostsPageSelected =
+    pagePostIds.length > 0 && pagePostIds.every((id) => selectedPostIds.includes(id));
+  const somePostsPageSelected =
+    pagePostIds.some((id) => selectedPostIds.includes(id)) && !allPostsPageSelected;
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -1113,6 +1307,11 @@ export default function Home() {
     if (node) node.indeterminate = somePageSelected;
   }, [somePageSelected, allPageSelected]);
 
+  useEffect(() => {
+    const node = document.getElementById("select-all-posts") as HTMLInputElement | null;
+    if (node) node.indeterminate = somePostsPageSelected;
+  }, [somePostsPageSelected, allPostsPageSelected]);
+
   function selectPageRecords(checked: boolean) {
     setSelectedIds((prev) => {
       if (checked) return Array.from(new Set([...prev, ...pageIds]));
@@ -1121,24 +1320,32 @@ export default function Home() {
     });
   }
 
+  function selectPostPageRecords(checked: boolean) {
+    setSelectedPostIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, ...pagePostIds]));
+      const remove = new Set(pagePostIds);
+      return prev.filter((id) => !remove.has(id));
+    });
+  }
+
   function navMeta(id: PageId): { dot: "done" | "pending" | "empty"; badge?: string } {
     if (id === "profile") return { dot: stats.profile ? "done" : "empty" };
     if (id === "leads") {
-      const ready = stats.posts.length > 0 && stats.drafts.length > 0;
+      const ready = stats.counts.posts.total > 0 && stats.counts.drafts.total > 0;
       return {
-        dot: ready ? "done" : stats.posts.length ? "pending" : "empty",
-        badge: stats.posts.length ? String(stats.posts.length) : undefined
+        dot: ready ? "done" : stats.counts.posts.total ? "pending" : "empty",
+        badge: stats.counts.posts.total ? String(stats.counts.posts.total) : undefined
       };
     }
     return {
-      dot: stats.smtp.configured && stats.drafts.length ? "done" : stats.smtp.configured ? "pending" : "empty",
+      dot: stats.smtp.configured && stats.counts.drafts.total ? "done" : stats.smtp.configured ? "pending" : "empty",
       badge: unsentCount ? String(unsentCount) : undefined
     };
   }
 
   const profileReady = Boolean(stats.profile);
-  const leadsImported = stats.posts.length > 0;
-  const draftsReady = stats.drafts.length > 0;
+  const leadsImported = stats.counts.posts.total > 0;
+  const draftsReady = stats.counts.drafts.total > 0;
   const emailReady = stats.smtp.configured;
 
   if (!authReady || !user) {
@@ -1421,7 +1628,7 @@ export default function Home() {
 
                 <div className="stat-chips">
                   <div className="stat-chip">
-                    <span className="val">{stats.posts.length}</span>
+                    <span className="val">{stats.counts.posts.total}</span>
                     <span className="lbl">Scraped</span>
                   </div>
                   <div className="stat-chip">
@@ -1456,15 +1663,17 @@ export default function Home() {
                         Sorted: Pending first, then Drafted, then other Valid, then Invalid · Pending = match OK — write now
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      className="btn-compact"
-                      disabled={busy || !profileReady || !postsPendingDraft}
-                      onClick={generatePending}
-                    >
-                      Write pending emails
-                      {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
-                    </button>
+                    <div className="leads-posts-actions">
+                      <button
+                        type="button"
+                        className="btn-compact"
+                        disabled={busy || !profileReady || !postsPendingDraft}
+                        onClick={generatePending}
+                      >
+                        Write pending emails
+                        {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="leads-posts-toolbar">
@@ -1505,20 +1714,10 @@ export default function Home() {
                           </option>
                         ))}
                       </select>
-                      <select
-                        className="toolbar-select"
-                        value={postPageSize}
-                        onChange={(e) => setPostPageSize(Number(e.target.value) as PageSize)}
-                        aria-label="Rows per page"
-                      >
-                        <option value={25}>25 / page</option>
-                        <option value={50}>50 / page</option>
-                        <option value={100}>100 / page</option>
-                      </select>
                     </div>
                   </div>
 
-                  {filteredPosts.length === 0 ? (
+                  {postTotal === 0 ? (
                     <div className="info-note" style={{ marginTop: 12 }}>
                       {postSearch.trim() || postFilter !== "all" || postDateFilter
                         ? "No posts match your search or filter."
@@ -1526,16 +1725,42 @@ export default function Home() {
                     </div>
                   ) : (
                     <>
-                      <div className="table-count" style={{ marginTop: 12 }}>
-                        Showing {postPageStart}–{postPageEnd} of {filteredPosts.length} posts
-                        {filteredPosts.length !== stats.posts.length
-                          ? ` · ${stats.posts.length} total`
-                          : null}
+                      <div className="leads-posts-bulk" style={{ marginTop: 12 }}>
+                        <div className={`toolbar-left${selectedPostIds.length ? "" : " dimmed"}`}>
+                          <label className="checkbox tight">
+                            <input
+                              id="select-all-posts"
+                              type="checkbox"
+                              checked={allPostsPageSelected}
+                              disabled={!pagePosts.length}
+                              onChange={(e) => selectPostPageRecords(e.target.checked)}
+                              aria-label="Select all posts on page"
+                            />
+                            Select page
+                          </label>
+                          <span className="toolbar-divider" />
+                          <button
+                            type="button"
+                            className="btn-danger btn-compact"
+                            disabled={busy || !selectedPostIds.length}
+                            onClick={deleteSelectedPosts}
+                          >
+                            Delete selected
+                            {selectedPostIds.length ? <span className="btn-count">{selectedPostIds.length}</span> : null}
+                          </button>
+                        </div>
+                        <div className="table-count" style={{ margin: 0 }}>
+                          Showing {postPageStart}–{postPageEnd} of {postTotal} posts
+                          {postTotal !== stats.counts.posts.total
+                            ? ` · ${stats.counts.posts.total} total`
+                            : null}
+                        </div>
                       </div>
                       <div className="table-wrap leads-posts-wrap" style={{ marginTop: 8 }}>
                         <table className="draft-table leads-posts-table">
                           <thead>
                             <tr>
+                              <th style={{ width: 36 }} aria-label="Select" />
                               <th style={{ width: 160 }}>Author</th>
                               <th style={{ width: 140 }}>Scraped</th>
                               <th style={{ width: 110 }}>Posted</th>
@@ -1544,7 +1769,7 @@ export default function Home() {
                               <th style={{ width: 130 }}>Phones</th>
                               <th style={{ width: 90 }}>Class</th>
                               <th style={{ width: 100 }}>Draft</th>
-                              <th style={{ width: 120 }}></th>
+                              <th style={{ width: 168 }}>Actions</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1552,7 +1777,7 @@ export default function Home() {
                               const emails = parsePostEmails(post.emails_json);
                               const phones = parsePostPhones(post.phones_json);
                               const valid = emails.length > 0;
-                              const outcome = postOutcomes.get(Number(post.id)) || {
+                              const outcome = post.draft_status || {
                                 kind: "none" as const,
                                 label: "—",
                                 reason: ""
@@ -1561,8 +1786,23 @@ export default function Home() {
                               const snippet = truncateText(String(post.posted_content || ""), 180);
                               const authorUrl = String(post.posted_by_url || "");
                               const postUrl = String(post.post_url || "");
+                              const postId = Number(post.id);
                               return (
-                                <tr key={Number(post.id)}>
+                                <tr key={postId}>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedPostIds.includes(postId)}
+                                      onChange={(e) => {
+                                        setSelectedPostIds((prev) =>
+                                          e.target.checked
+                                            ? Array.from(new Set([...prev, postId]))
+                                            : prev.filter((id) => id !== postId)
+                                        );
+                                      }}
+                                      aria-label={`Select ${author}`}
+                                    />
+                                  </td>
                                   <td className="col-contact" title={author}>
                                     {authorUrl ? (
                                       <a href={authorUrl} target="_blank" rel="noopener noreferrer" className="table-link">
@@ -1612,16 +1852,26 @@ export default function Home() {
                                     )}
                                   </td>
                                   <td className="actions-cell">
-                                    {outcome.kind === "pending" || outcome.kind === "skipped" ? (
+                                    <div className="leads-posts-actions">
+                                      {outcome.kind === "pending" || outcome.kind === "skipped" ? (
+                                        <button
+                                          type="button"
+                                          className="link-btn"
+                                          disabled={busy || !profileReady}
+                                          onClick={() => generateOne(postId)}
+                                        >
+                                          {outcome.kind === "skipped" ? "Retry write" : "Write email"}
+                                        </button>
+                                      ) : null}
                                       <button
                                         type="button"
-                                        className="link-btn"
-                                        disabled={busy || !profileReady}
-                                        onClick={() => generateOne(Number(post.id))}
+                                        className="link-btn link-btn-danger"
+                                        disabled={busy}
+                                        onClick={() => deleteOnePost(postId)}
                                       >
-                                        {outcome.kind === "skipped" ? "Retry write" : "Write email"}
+                                        Delete
                                       </button>
-                                    ) : null}
+                                    </div>
                                   </td>
                                 </tr>
                               );
@@ -1629,79 +1879,26 @@ export default function Home() {
                           </tbody>
                         </table>
                       </div>
-                      <div className="pagination">
-                        <span className="pagination-meta">
-                          Showing {postPageStart}–{postPageEnd} of {filteredPosts.length} posts
-                        </span>
-                        <div className="pagination-controls">
-                          <button
-                            type="button"
-                            className="page-btn"
-                            disabled={safePostPage <= 1}
-                            onClick={() => setPostPage((current) => Math.max(1, current - 1))}
-                          >
-                            ‹ Prev
-                          </button>
-                          <span className="page-pill current">
-                            {safePostPage} / {postTotalPages}
-                          </span>
-                          <button
-                            type="button"
-                            className="page-btn"
-                            disabled={safePostPage >= postTotalPages}
-                            onClick={() => setPostPage((current) => Math.min(postTotalPages, current + 1))}
-                          >
-                            Next ›
-                          </button>
-                        </div>
-                      </div>
+                      <TablePagination
+                        page={safePostPage}
+                        totalPages={postTotalPages}
+                        pageStart={postPageStart}
+                        pageEnd={postPageEnd}
+                        total={postTotal}
+                        pageSize={postPageSize}
+                        onPageChange={setPostPage}
+                        onPageSizeChange={setPostPageSize}
+                        noun="posts"
+                      />
                     </>
                   )}
                 </div>
               ) : null}
 
-              {leadsImported ? (
-                <div className="card" style={{ marginTop: 16 }}>
-                  <h3 className="section-title">Write personalized emails</h3>
-                  <p className="hint" style={{ marginTop: 0 }}>
-                    Prefer the buttons on pending rows above. This writes drafts for all remaining undrafted posts (in batches).
-                  </p>
-                  <div className="actions-row">
-                    <button
-                      onClick={() => generate()}
-                      disabled={busy || !stats.profile || !stats.posts.length}
-                      type="button"
-                    >
-                      Write all remaining emails
-                    </button>
-                    <button
-                      onClick={generatePending}
-                      disabled={busy || !profileReady || !postsPendingDraft}
-                      type="button"
-                      className="btn-secondary"
-                    >
-                      Write pending only
-                      {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
-                    </button>
-                    <a href="/api/export" download>
-                      <button className="btn-secondary" type="button">Download drafts</button>
-                    </a>
-                  </div>
-                  {postsPendingDraft ? (
-                    <div className="info-note">
-                      {postsPendingDraft} pending post{postsPendingDraft === 1 ? "" : "s"} ready to draft.
-                    </div>
-                  ) : !draftsReady ? (
-                    <div className="info-note">After leads are saved, drafts appear here — or write emails from pending rows above.</div>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="info-note">Run the Chrome extension on LinkedIn (or import a CSV) to unlock email writing.</div>
-              )}
-
+      
               {draftsReady ? (
                 <div className="step-next-bar">
-                  <p>{stats.drafts.length} draft{stats.drafts.length === 1 ? "" : "s"} ready. Next: connect your email and send.</p>
+                  <p>{stats.counts.drafts.total} draft{stats.counts.drafts.total === 1 ? "" : "s"} ready. Next: connect your email and send.</p>
                   <button type="button" onClick={() => setCurrentPage("send")}>Continue to Send emails →</button>
                 </div>
               ) : null}
@@ -1714,8 +1911,8 @@ export default function Home() {
                 title="Step 3 · Send emails"
                 subtitle={
                   sendRemaining == null
-                    ? `${stats.drafts.length} drafts · ${unsentCount} ready to send · ${sentCount} sent`
-                    : `${stats.drafts.length} drafts · ${unsentCount} ready · ${sentCount} sent · today ${sendUsed}/${dailyLimit} · ${sendRemaining} left`
+                    ? `${stats.counts.drafts.total} drafts · ${unsentCount} ready to send · ${sentCount} sent`
+                    : `${stats.counts.drafts.total} drafts · ${unsentCount} ready · ${sentCount} sent · today ${sendUsed}/${dailyLimit} · ${sendRemaining} left`
                 }
                 actions={
                   emailReady && unsentCount ? (
@@ -1955,7 +2152,7 @@ export default function Home() {
                     className="btn-danger btn-compact"
                     type="button"
                     onClick={clearAllDrafts}
-                    disabled={busy || !stats.drafts.length}
+                    disabled={busy || !stats.counts.drafts.total}
                   >
                     Clear drafts
                   </button>
@@ -2003,20 +2200,10 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
-                  <select
-                    className="toolbar-select"
-                    value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
-                    aria-label="Rows per page"
-                  >
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
-                  </select>
                 </div>
               </div>
 
-              {filteredDrafts.length === 0 ? (
+              {draftTotal === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">∅</div>
                   <p>
@@ -2033,9 +2220,9 @@ export default function Home() {
               ) : (
                 <>
                   <div className="table-count">
-                    Showing {pageStart}–{pageEnd} of {filteredDrafts.length} records
-                    {filteredDrafts.length !== stats.drafts.length
-                      ? ` · ${stats.drafts.length} total`
+                    Sorted by sent date, then created · Showing {pageStart}–{pageEnd} of {draftTotal}
+                    {draftTotal !== stats.counts.drafts.total
+                      ? ` · ${stats.counts.drafts.total} total`
                       : null}
                   </div>
                   <div className="table-wrap" style={{ marginTop: 8 }}>
@@ -2126,30 +2313,17 @@ export default function Home() {
                     </table>
                   </div>
 
-                  <div className="pagination">
-                    <span className="pagination-meta">
-                      Showing {pageStart}–{pageEnd} of {filteredDrafts.length} results
-                    </span>
-                    <div className="pagination-controls">
-                      <button
-                        type="button"
-                        className="page-btn"
-                        disabled={safePage <= 1}
-                        onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      >
-                        ‹ Prev
-                      </button>
-                      <span className="page-pill current">{safePage}</span>
-                      <button
-                        type="button"
-                        className="page-btn"
-                        disabled={safePage >= totalPages}
-                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      >
-                        Next ›
-                      </button>
-                    </div>
-                  </div>
+                  <TablePagination
+                    page={safePage}
+                    totalPages={totalPages}
+                    pageStart={pageStart}
+                    pageEnd={pageEnd}
+                    total={draftTotal}
+                    pageSize={pageSize}
+                    onPageChange={setPage}
+                    onPageSizeChange={setPageSize}
+                    noun="emails"
+                  />
                 </>
               )}
             </section>

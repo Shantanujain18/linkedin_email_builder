@@ -8,19 +8,54 @@ import {
   getPostsWithEmails,
   getProfile,
   insertDraft,
+  listDraftsPage,
   setDraftReplied,
   setPostDraftSkipReason,
   updateDraftCalled,
-  updateDraftContent
+  updateDraftContent,
+  type DraftStatusFilter
 } from "@/lib/db";
 import { draftEmailBatch } from "@/lib/openai";
 import { mapPool } from "@/lib/pool";
+import { parsePage, parsePageSize, postDraftStatus } from "@/lib/post-draft-status";
 import type { CandidateProfile } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 const BATCH_SIZE = 5;
 const BATCH_CONCURRENCY = 4;
+
+const DRAFT_STATUS_FILTERS = new Set<DraftStatusFilter>([
+  "all",
+  "unsent",
+  "draft",
+  "sent",
+  "skipped",
+  "replied"
+]);
+
+export async function GET(request: Request) {
+  try {
+    const user = await requireUser();
+    if (!isUser(user)) return user;
+
+    const url = new URL(request.url);
+    const page = parsePage(url.searchParams.get("page"));
+    const pageSize = parsePageSize(url.searchParams.get("pageSize"));
+    const statusRaw = String(url.searchParams.get("status") || "all") as DraftStatusFilter;
+    const status = DRAFT_STATUS_FILTERS.has(statusRaw) ? statusRaw : "all";
+    const q = String(url.searchParams.get("q") || "");
+    const date = String(url.searchParams.get("date") || "");
+
+    const result = await listDraftsPage(user.id, { page, pageSize, status, q, date });
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to load drafts." },
+      { status: 500 }
+    );
+  }
+}
 
 type PendingDraft = {
   key: string;
@@ -133,11 +168,12 @@ export async function POST(request: Request) {
     const user = await requireUser();
     if (!isUser(user)) return user;
 
-    const body = (await request.json().catch(() => ({}))) as { postIds?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { postIds?: unknown; pendingOnly?: unknown };
     const requestedIds = Array.isArray(body.postIds)
       ? body.postIds.map((value) => Number(value)).filter((id) => Number.isFinite(id) && id > 0)
       : [];
     const requestedSet = requestedIds.length ? new Set(requestedIds) : null;
+    const pendingOnly = Boolean(body.pendingOnly);
 
     const profileRow = await getProfile(user.id);
     if (!profileRow?.resume_text) return NextResponse.json({ error: "Upload a resume first." }, { status: 400 });
@@ -157,6 +193,7 @@ export async function POST(request: Request) {
     if (!posts.length) return NextResponse.json({ error: "No imported posts contain email addresses." }, { status: 400 });
 
     const existingPostIds = await existingDraftPostIds(user.id);
+    const topSkills = String(profileRow.top_skills || "");
 
     const pending: PendingDraft[] = [];
     for (const post of posts) {
@@ -166,6 +203,19 @@ export async function POST(request: Request) {
       const emails = parseJsonList(post.emailsJson);
       const email = emails[0];
       if (!email) continue;
+      if (pendingOnly) {
+        const outcome = postDraftStatus(
+          {
+            id: postId,
+            emails_json: post.emailsJson,
+            draft_skip_reason: post.draftSkipReason,
+            posted_content: post.postedContent
+          },
+          existingPostIds,
+          topSkills
+        );
+        if (outcome.kind !== "pending") continue;
+      }
       pending.push({
         key: String(postId),
         postId,

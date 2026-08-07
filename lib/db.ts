@@ -8,6 +8,7 @@ import {
   profiles,
   smtpSettings
 } from "@/lib/schema";
+import { postDraftStatus, postSortRank, toLocalDay, type PostFilter } from "@/lib/post-draft-status";
 
 export type User = {
   id: string;
@@ -657,13 +658,8 @@ export async function upsertProfileFromResume(
     });
 }
 
-export async function getPosts(userId: string) {
-  const rows = await getDb()
-    .select()
-    .from(linkedinPosts)
-    .where(eq(linkedinPosts.userId, userId))
-    .orderBy(desc(linkedinPosts.id));
-  return rows.map((row) => ({
+function mapPostRow(row: typeof linkedinPosts.$inferSelect) {
+  return {
     id: row.id,
     posted_by: row.postedBy,
     posted_by_url: row.postedByUrl,
@@ -674,7 +670,304 @@ export async function getPosts(userId: string) {
     phones_json: row.phonesJson || "[]",
     draft_skip_reason: row.draftSkipReason || "",
     created_at: row.createdAt
+  };
+}
+
+export async function getPosts(userId: string) {
+  const rows = await getDb()
+    .select()
+    .from(linkedinPosts)
+    .where(eq(linkedinPosts.userId, userId))
+    .orderBy(desc(linkedinPosts.id));
+  return rows.map(mapPostRow);
+}
+
+export async function deletePostsByIds(userId: string, ids: number[]) {
+  const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
+  if (!unique.length) return 0;
+  const deleted = await getDb()
+    .delete(linkedinPosts)
+    .where(and(eq(linkedinPosts.userId, userId), inArray(linkedinPosts.id, unique)))
+    .returning({ id: linkedinPosts.id });
+  return deleted.length;
+}
+
+export type DraftStatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped" | "replied";
+
+function draftMatchesStatusFilter(
+  draft: { status: string; replied: boolean },
+  status: DraftStatusFilter
+) {
+  if (status === "all") return true;
+  if (status === "unsent") return draft.status !== "sent" && draft.status !== "skipped" && !draft.replied;
+  if (status === "draft") return draft.status === "draft" && !draft.replied;
+  if (status === "sent") return draft.status === "sent";
+  if (status === "skipped") return draft.status === "skipped";
+  if (status === "replied") return Boolean(draft.replied);
+  return true;
+}
+
+export async function getDraftCounts(userId: string) {
+  const rows = await getDb()
+    .select({
+      status: emailDrafts.status,
+      replied: emailDrafts.replied
+    })
+    .from(emailDrafts)
+    .where(eq(emailDrafts.userId, userId));
+
+  let unsent = 0;
+  let draft = 0;
+  let sent = 0;
+  let skipped = 0;
+  let replied = 0;
+  for (const row of rows) {
+    const item = { status: row.status, replied: Boolean(row.replied) };
+    if (draftMatchesStatusFilter(item, "unsent")) unsent += 1;
+    if (draftMatchesStatusFilter(item, "draft")) draft += 1;
+    if (draftMatchesStatusFilter(item, "sent")) sent += 1;
+    if (draftMatchesStatusFilter(item, "skipped")) skipped += 1;
+    if (draftMatchesStatusFilter(item, "replied")) replied += 1;
+  }
+  return { total: rows.length, unsent, draft, sent, skipped, replied };
+}
+
+export async function listDraftsPage(
+  userId: string,
+  options: {
+    page: number;
+    pageSize: number;
+    status?: DraftStatusFilter;
+    q?: string;
+    date?: string;
+  }
+) {
+  await syncDraftsRepliedFromHistory(userId);
+
+  const status = options.status || "all";
+  const q = String(options.q || "").trim().toLowerCase();
+  const date = String(options.date || "").trim();
+  const pageSize = options.pageSize;
+  const page = options.page;
+
+  const rows = await getDb()
+    .select()
+    .from(emailDrafts)
+    .where(eq(emailDrafts.userId, userId))
+    .orderBy(desc(emailDrafts.id));
+
+  const mapped = rows.map(mapDraftRow);
+  const filtered = mapped.filter((draft) => {
+    if (!draftMatchesStatusFilter({ status: draft.status, replied: Boolean(draft.replied) }, status)) {
+      return false;
+    }
+    if (date) {
+      const day = (() => {
+        if (!draft.created_at) return "";
+        const d = new Date(draft.created_at);
+        if (Number.isNaN(d.getTime())) return "";
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const dayNum = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${dayNum}`;
+      })();
+      if (day !== date) return false;
+    }
+    if (!q) return true;
+    const contact = `${draft.contact_name || ""} ${draft.recipient_name || ""}`.toLowerCase();
+    return (
+      String(draft.company || "").toLowerCase().includes(q) ||
+      String(draft.recipient_email || "").toLowerCase().includes(q) ||
+      contact.includes(q) ||
+      String(draft.subject || "").toLowerCase().includes(q) ||
+      String(draft.phone || "").toLowerCase().includes(q)
+    );
+  });
+
+  const filteredIds = filtered.map((row) => row.id);
+  const sentAtByDraft = new Map<number, string>();
+  if (filteredIds.length) {
+    const logs = await getDb()
+      .select({
+        draftId: emailSendLog.draftId,
+        sentAt: emailSendLog.sentAt
+      })
+      .from(emailSendLog)
+      .where(and(eq(emailSendLog.userId, userId), inArray(emailSendLog.draftId, filteredIds)));
+    for (const log of logs) {
+      if (!log.draftId) continue;
+      const prev = sentAtByDraft.get(log.draftId);
+      if (!prev || log.sentAt > prev) sentAtByDraft.set(log.draftId, log.sentAt);
+    }
+  }
+
+  const enriched = filtered.map((draft) => ({
+    ...draft,
+    sent_at: sentAtByDraft.get(draft.id) || (draft.status === "sent" ? draft.updated_at : "")
   }));
+
+  enriched.sort((a, b) => {
+    const aSent = String(a.sent_at || "");
+    const bSent = String(b.sent_at || "");
+    if (aSent !== bSent) {
+      if (!aSent) return 1;
+      if (!bSent) return -1;
+      return bSent.localeCompare(aSent);
+    }
+    return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+  });
+
+  const total = enriched.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageRows = enriched.slice(start, start + pageSize);
+
+  const ids = pageRows.map((row) => row.id);
+  const notesByDraft = await getNotesByDraftIds(ids);
+
+  const dates = Array.from(
+    new Set(
+      mapped
+        .map((draft) => {
+          if (!draft.created_at) return "";
+          const d = new Date(draft.created_at);
+          if (Number.isNaN(d.getTime())) return "";
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, "0");
+          const dayNum = String(d.getDate()).padStart(2, "0");
+          return `${y}-${m}-${dayNum}`;
+        })
+        .filter(Boolean)
+    )
+  ).sort((a, b) => b.localeCompare(a));
+
+  const items = pageRows.map((draft) => ({
+    ...draft,
+    called: Boolean(draft.called),
+    replied: Boolean(draft.replied),
+    notes: notesByDraft[Number(draft.id)] || [],
+    sent_at: draft.sent_at || ""
+  }));
+
+  return { items, total, page: safePage, pageSize, dates };
+}
+
+export async function listPostsPage(
+  userId: string,
+  options: {
+    page: number;
+    pageSize: number;
+    filter?: PostFilter;
+    q?: string;
+    date?: string;
+    topSkills: string;
+  }
+) {
+  const filter = options.filter || "all";
+  const q = String(options.q || "").trim().toLowerCase();
+  const date = String(options.date || "").trim();
+  const posts = await getPosts(userId);
+  const draftedPostIds = await existingDraftPostIds(userId);
+
+  const enriched = posts.map((post) => {
+    const emails = (() => {
+      try {
+        const parsed = JSON.parse(String(post.emails_json || "[]"));
+        if (!Array.isArray(parsed)) return [] as string[];
+        return parsed.map((email) => String(email || "").trim()).filter(Boolean);
+      } catch {
+        return [] as string[];
+      }
+    })();
+    const phones = (() => {
+      try {
+        const parsed = JSON.parse(String(post.phones_json || "[]"));
+        if (!Array.isArray(parsed)) return [] as string[];
+        return parsed.map((phone) => String(phone || "").trim()).filter(Boolean);
+      } catch {
+        return [] as string[];
+      }
+    })();
+    const outcome = postDraftStatus(post, draftedPostIds, options.topSkills);
+    return { post, emails, phones, outcome, valid: emails.length > 0 };
+  });
+
+  const counts = {
+    total: enriched.length,
+    valid: enriched.filter((row) => row.valid).length,
+    invalid: enriched.filter((row) => !row.valid).length,
+    pending: enriched.filter((row) => row.outcome.kind === "pending").length,
+    drafted: enriched.filter((row) => row.outcome.kind === "drafted").length,
+    skipped: enriched.filter((row) => row.outcome.kind === "skipped").length
+  };
+
+  const filtered = enriched.filter((row) => {
+    if (filter === "valid" && !row.valid) return false;
+    if (filter === "invalid" && row.valid) return false;
+    if (filter === "drafted" && row.outcome.kind !== "drafted") return false;
+    if (filter === "skipped" && row.outcome.kind !== "skipped") return false;
+    if (filter === "pending" && row.outcome.kind !== "pending") return false;
+    if (date && toLocalDay(String(row.post.created_at || "")) !== date) return false;
+    if (!q) return true;
+    const haystack = [
+      row.post.posted_by,
+      row.post.posted_content,
+      row.post.posted_by_url,
+      row.post.post_url,
+      row.emails.join(" "),
+      row.phones.join(" "),
+      row.outcome.label,
+      row.outcome.reason
+    ]
+      .map((value) => String(value || "").toLowerCase())
+      .join(" ");
+    return haystack.includes(q);
+  });
+
+  filtered.sort((a, b) => {
+    const rank = postSortRank(a.outcome, a.valid) - postSortRank(b.outcome, b.valid);
+    if (rank !== 0) return rank;
+    return Number(b.post.id) - Number(a.post.id);
+  });
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / options.pageSize) || 1);
+  const safePage = Math.min(Math.max(1, options.page), totalPages);
+  const start = (safePage - 1) * options.pageSize;
+  const pageRows = filtered.slice(start, start + options.pageSize);
+
+  const dates = Array.from(
+    new Set(enriched.map((row) => toLocalDay(String(row.post.created_at || ""))).filter(Boolean))
+  ).sort((a, b) => b.localeCompare(a));
+
+  const pendingIds = enriched
+    .filter((row) => row.outcome.kind === "pending")
+    .map((row) => Number(row.post.id));
+
+  return {
+    items: pageRows.map((row) => ({
+      ...row.post,
+      draft_status: row.outcome
+    })),
+    total,
+    page: safePage,
+    pageSize: options.pageSize,
+    counts,
+    dates,
+    pendingIds
+  };
+}
+
+export async function getWorkspaceCounts(userId: string, topSkills: string) {
+  const [postPage, draftCounts] = await Promise.all([
+    listPostsPage(userId, { page: 1, pageSize: 1, topSkills }),
+    getDraftCounts(userId)
+  ]);
+  return {
+    posts: postPage.counts,
+    drafts: draftCounts
+  };
 }
 
 export async function setPostDraftSkipReason(userId: string, postId: number, reason: string) {
@@ -691,14 +984,31 @@ export async function clearPostDraftSkipReason(userId: string, postId: number) {
     .where(and(eq(linkedinPosts.userId, userId), eq(linkedinPosts.id, postId)));
 }
 
+/** After a draft is removed, keep the post out of Step 2 "Pending" (Retry write still works). */
+export function skipReasonAfterDraftDelete(status: string) {
+  return status === "sent" ? "Previously sent" : "Draft deleted";
+}
+
+async function stampPostsAfterDraftRemoval(
+  userId: string,
+  rows: Array<{ postId: number; status: string }>
+) {
+  for (const row of rows) {
+    const postId = Number(row.postId);
+    if (!Number.isFinite(postId) || postId < 1) continue;
+    await setPostDraftSkipReason(userId, postId, skipReasonAfterDraftDelete(row.status));
+  }
+}
+
 export async function clearDrafts(userId: string) {
   const db = getDb();
-  const ids = await db
-    .select({ id: emailDrafts.id })
+  const rows = await db
+    .select({ id: emailDrafts.id, postId: emailDrafts.postId, status: emailDrafts.status })
     .from(emailDrafts)
     .where(eq(emailDrafts.userId, userId));
-  const draftIds = ids.map((row) => row.id);
+  const draftIds = rows.map((row) => row.id);
   if (draftIds.length) {
+    await stampPostsAfterDraftRemoval(userId, rows);
     await db.delete(draftNotes).where(inArray(draftNotes.draftId, draftIds));
   }
   const deleted = await db.delete(emailDrafts).where(eq(emailDrafts.userId, userId)).returning({ id: emailDrafts.id });
@@ -710,11 +1020,12 @@ export async function deleteDraftsByIds(userId: string, ids: number[]) {
   if (!unique.length) return 0;
   const db = getDb();
   const owned = await db
-    .select({ id: emailDrafts.id })
+    .select({ id: emailDrafts.id, postId: emailDrafts.postId, status: emailDrafts.status })
     .from(emailDrafts)
     .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.id, unique)));
   const ownedIds = owned.map((row) => row.id);
   if (!ownedIds.length) return 0;
+  await stampPostsAfterDraftRemoval(userId, owned);
   await db.delete(draftNotes).where(inArray(draftNotes.draftId, ownedIds));
   const deleted = await db
     .delete(emailDrafts)
