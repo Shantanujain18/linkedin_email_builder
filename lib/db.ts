@@ -708,28 +708,74 @@ function draftMatchesStatusFilter(
 }
 
 export async function getDraftCounts(userId: string) {
-  const rows = await getDb()
+  const [row] = await getDb()
     .select({
-      status: emailDrafts.status,
-      replied: emailDrafts.replied
+      total: sql<number>`count(*)::int`,
+      unsent: sql<number>`count(*) filter (
+        where ${emailDrafts.status} <> 'sent'
+          and ${emailDrafts.status} <> 'skipped'
+          and ${emailDrafts.replied} = false
+      )::int`,
+      draft: sql<number>`count(*) filter (
+        where ${emailDrafts.status} = 'draft' and ${emailDrafts.replied} = false
+      )::int`,
+      sent: sql<number>`count(*) filter (where ${emailDrafts.status} = 'sent')::int`,
+      skipped: sql<number>`count(*) filter (where ${emailDrafts.status} = 'skipped')::int`,
+      replied: sql<number>`count(*) filter (where ${emailDrafts.replied} = true)::int`
     })
     .from(emailDrafts)
     .where(eq(emailDrafts.userId, userId));
 
-  let unsent = 0;
-  let draft = 0;
-  let sent = 0;
-  let skipped = 0;
-  let replied = 0;
-  for (const row of rows) {
-    const item = { status: row.status, replied: Boolean(row.replied) };
-    if (draftMatchesStatusFilter(item, "unsent")) unsent += 1;
-    if (draftMatchesStatusFilter(item, "draft")) draft += 1;
-    if (draftMatchesStatusFilter(item, "sent")) sent += 1;
-    if (draftMatchesStatusFilter(item, "skipped")) skipped += 1;
-    if (draftMatchesStatusFilter(item, "replied")) replied += 1;
-  }
-  return { total: rows.length, unsent, draft, sent, skipped, replied };
+  return {
+    total: Number(row?.total) || 0,
+    unsent: Number(row?.unsent) || 0,
+    draft: Number(row?.draft) || 0,
+    sent: Number(row?.sent) || 0,
+    skipped: Number(row?.skipped) || 0,
+    replied: Number(row?.replied) || 0
+  };
+}
+
+/** Fast SQL counts for dashboard bootstrap. Pending ≈ valid + no draft + no stored skip reason
+ *  (skill-fit soft-skips are refined when /api/posts loads). */
+export async function getPostCounts(userId: string) {
+  const drafted = sql`exists (
+    select 1 from ${emailDrafts} d
+    where d.post_id = ${linkedinPosts.id} and d.user_id = ${linkedinPosts.userId}
+  )`;
+  const hasEmail = sql`${linkedinPosts.emailsJson} is not null
+    and ${linkedinPosts.emailsJson} <> ''
+    and ${linkedinPosts.emailsJson} <> '[]'`;
+  const hasSkip = sql`coalesce(trim(${linkedinPosts.draftSkipReason}), '') <> ''`;
+
+  const [row] = await getDb()
+    .select({
+      total: sql<number>`count(*)::int`,
+      valid: sql<number>`count(*) filter (where ${hasEmail})::int`,
+      drafted: sql<number>`count(*) filter (where ${drafted})::int`,
+      skipped: sql<number>`count(*) filter (where ${hasSkip} and not ${drafted})::int`,
+      pending: sql<number>`count(*) filter (
+        where ${hasEmail} and not ${drafted} and not ${hasSkip}
+      )::int`
+    })
+    .from(linkedinPosts)
+    .where(eq(linkedinPosts.userId, userId));
+
+  const total = Number(row?.total) || 0;
+  const valid = Number(row?.valid) || 0;
+  return {
+    total,
+    valid,
+    invalid: Math.max(0, total - valid),
+    drafted: Number(row?.drafted) || 0,
+    skipped: Number(row?.skipped) || 0,
+    pending: Number(row?.pending) || 0
+  };
+}
+
+export async function getWorkspaceCounts(userId: string) {
+  const [posts, drafts] = await Promise.all([getPostCounts(userId), getDraftCounts(userId)]);
+  return { posts, drafts };
 }
 
 export async function listDraftsPage(
@@ -956,17 +1002,6 @@ export async function listPostsPage(
     counts,
     dates,
     pendingIds
-  };
-}
-
-export async function getWorkspaceCounts(userId: string, topSkills: string) {
-  const [postPage, draftCounts] = await Promise.all([
-    listPostsPage(userId, { page: 1, pageSize: 1, topSkills }),
-    getDraftCounts(userId)
-  ]);
-  return {
-    posts: postPage.counts,
-    drafts: draftCounts
   };
 }
 

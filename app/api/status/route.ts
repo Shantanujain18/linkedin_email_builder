@@ -13,15 +13,18 @@ export async function GET() {
   const user = await requireUser();
   if (!isUser(user)) return user;
 
-  const profile = await getPublicProfile(user.id);
-  const topSkills = String((profile as Record<string, unknown> | null)?.top_skills || "");
-  const counts = await getWorkspaceCounts(user.id, topSkills);
+  const [profile, smtp, quota, counts] = await Promise.all([
+    getPublicProfile(user.id),
+    getPublicSmtpSettings(user.id),
+    getAllDailyQuotas(user.id),
+    getWorkspaceCounts(user.id)
+  ]);
 
   return NextResponse.json({
     user: { id: user.id, email: user.email, name: user.name },
     profile,
-    smtp: await getPublicSmtpSettings(user.id),
-    quota: await getAllDailyQuotas(user.id),
+    smtp,
+    quota,
     counts: {
       posts: counts.posts,
       drafts: counts.drafts
