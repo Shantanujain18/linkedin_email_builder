@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { EXTENSION } from "@/lib/constants";
 import type { PostDraftOutcome, PostFilter } from "@/lib/post-draft-status";
 
@@ -113,10 +114,29 @@ type PageId = "profile" | "leads" | "send";
 type StatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped" | "replied";
 type PageSize = 10 | 25 | 50 | 100;
 
+type PostsPageData = {
+  items: PostRow[];
+  total: number;
+  page: number;
+  dates: string[];
+  counts?: WorkspaceCounts["posts"];
+};
+
+type DraftsPageData = {
+  items: Draft[];
+  total: number;
+  page: number;
+  dates: string[];
+};
+
 const emptyCounts: WorkspaceCounts = {
   posts: { total: 0, valid: 0, invalid: 0, pending: 0, drafted: 0, skipped: 0 },
   drafts: { total: 0, unsent: 0, draft: 0, sent: 0, skipped: 0, replied: 0 }
 };
+
+const EMPTY_POSTS: PostRow[] = [];
+const EMPTY_DRAFTS: Draft[] = [];
+const EMPTY_DATES: string[] = [];
 
 const PAGES: Array<{ id: PageId; label: string; step: number }> = [
   { id: "profile", label: "Your profile", step: 1 },
@@ -453,6 +473,7 @@ function PageHeader({
 
 export default function Home() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<{ id: string; email: string; name: string } | null>(null);
   const [currentPage, setCurrentPage] = useState<PageId>("profile");
@@ -503,20 +524,36 @@ export default function Home() {
   const [draftDateFilter, setDraftDateFilter] = useState("");
   const [postPage, setPostPage] = useState(1);
   const [postPageSize, setPostPageSize] = useState<PageSize>(25);
-  const [postTotal, setPostTotal] = useState(0);
-  const [draftTotal, setDraftTotal] = useState(0);
-  const [postsLoading, setPostsLoading] = useState(true);
-  const [draftsLoading, setDraftsLoading] = useState(true);
-  const [postDateOptions, setPostDateOptions] = useState<string[]>([]);
-  const [draftDateOptions, setDraftDateOptions] = useState<string[]>([]);
   const emailSetupInit = useRef(false);
-  const postsLoadGen = useRef(0);
-  const draftsLoadGen = useRef(0);
+  const knownPostTotal = useRef(0);
+  const knownDraftTotal = useRef(0);
 
-  const loadPosts = useCallback(async () => {
-    const gen = ++postsLoadGen.current;
-    setPostsLoading(true);
-    try {
+  const postsQueryKey = [
+    "posts",
+    {
+      page: postPage,
+      pageSize: postPageSize,
+      filter: postFilter,
+      q: debouncedPostSearch,
+      date: postDateFilter
+    }
+  ] as const;
+
+  const draftsQueryKey = [
+    "drafts",
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      q: debouncedSearch,
+      date: draftDateFilter
+    }
+  ] as const;
+
+  const postsQuery = useQuery({
+    queryKey: postsQueryKey,
+    enabled: authReady,
+    queryFn: async (): Promise<PostsPageData> => {
       const params = new URLSearchParams({
         page: String(postPage),
         pageSize: String(postPageSize),
@@ -525,40 +562,28 @@ export default function Home() {
         date: postDateFilter
       });
       const response = await fetch(`/api/posts?${params}`, { cache: "no-store" });
-      if (gen !== postsLoadGen.current) return;
       if (response.status === 401) {
         setUser(null);
         setAuthReady(true);
         router.replace("/login");
-        return;
+        throw new Error("Sign in required.");
       }
       const data = await response.json();
-      if (gen !== postsLoadGen.current) return;
       if (!response.ok) throw new Error(data.error || "Failed to load posts.");
-      setStats((prev) => ({
-        ...prev,
-        posts: data.items || [],
-        counts: {
-          ...prev.counts,
-          posts: data.counts || prev.counts.posts
-        }
-      }));
-      setPostTotal(Number(data.total) || 0);
-      if (data.page && data.page !== postPage) setPostPage(Number(data.page));
-      setPostDateOptions(Array.isArray(data.dates) ? data.dates : []);
-      setSelectedPostIds((prev) => {
-        const existing = new Set((data.items || []).map((post: PostRow) => Number(post.id)));
-        return prev.filter((id) => existing.has(id));
-      });
-    } finally {
-      if (gen === postsLoadGen.current) setPostsLoading(false);
+      return {
+        items: (data.items || []) as PostRow[],
+        total: Number(data.total) || 0,
+        page: Number(data.page) || postPage,
+        dates: Array.isArray(data.dates) ? data.dates : [],
+        counts: data.counts
+      };
     }
-  }, [postPage, postPageSize, postFilter, debouncedPostSearch, postDateFilter, router]);
+  });
 
-  const loadDrafts = useCallback(async () => {
-    const gen = ++draftsLoadGen.current;
-    setDraftsLoading(true);
-    try {
+  const draftsQuery = useQuery({
+    queryKey: draftsQueryKey,
+    enabled: authReady,
+    queryFn: async (): Promise<DraftsPageData> => {
       const params = new URLSearchParams({
         page: String(page),
         pageSize: String(pageSize),
@@ -567,31 +592,38 @@ export default function Home() {
         date: draftDateFilter
       });
       const response = await fetch(`/api/drafts?${params}`, { cache: "no-store" });
-      if (gen !== draftsLoadGen.current) return;
       if (response.status === 401) {
         setUser(null);
         setAuthReady(true);
         router.replace("/login");
-        return;
+        throw new Error("Sign in required.");
       }
       const data = await response.json();
-      if (gen !== draftsLoadGen.current) return;
       if (!response.ok) throw new Error(data.error || "Failed to load drafts.");
-      setStats((prev) => ({
-        ...prev,
-        drafts: data.items || []
-      }));
-      setDraftTotal(Number(data.total) || 0);
-      if (data.page && data.page !== page) setPage(Number(data.page));
-      setDraftDateOptions(Array.isArray(data.dates) ? data.dates : []);
-      setSelectedIds((prev) => {
-        const existing = new Set((data.items || []).map((draft: Draft) => draft.id));
-        return prev.filter((id) => existing.has(id));
-      });
-    } finally {
-      if (gen === draftsLoadGen.current) setDraftsLoading(false);
+      return {
+        items: (data.items || []) as Draft[],
+        total: Number(data.total) || 0,
+        page: Number(data.page) || page,
+        dates: Array.isArray(data.dates) ? data.dates : []
+      };
     }
-  }, [page, pageSize, statusFilter, debouncedSearch, draftDateFilter, router]);
+  });
+
+  const pagePosts = postsQuery.data?.items ?? EMPTY_POSTS;
+  const postDateOptions = postsQuery.data?.dates ?? EMPTY_DATES;
+  const postsLoading = postsQuery.isPending;
+  if (postsQuery.data && typeof postsQuery.data.total === "number") {
+    knownPostTotal.current = postsQuery.data.total;
+  }
+  const postTotal = postsQuery.data?.total ?? knownPostTotal.current;
+
+  const pageDrafts = draftsQuery.data?.items ?? EMPTY_DRAFTS;
+  const draftDateOptions = draftsQuery.data?.dates ?? EMPTY_DATES;
+  const draftsLoading = draftsQuery.isPending;
+  if (draftsQuery.data && typeof draftsQuery.data.total === "number") {
+    knownDraftTotal.current = draftsQuery.data.total;
+  }
+  const draftTotal = draftsQuery.data?.total ?? knownDraftTotal.current;
 
   async function refresh() {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -644,7 +676,10 @@ export default function Home() {
 
   async function refreshAll() {
     await refresh();
-    await Promise.all([loadPosts(), loadDrafts()]);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["posts"] }),
+      queryClient.invalidateQueries({ queryKey: ["drafts"] })
+    ]);
   }
 
   useEffect(() => { refresh().catch(() => { setAuthReady(true); router.replace("/login"); }); }, []);
@@ -660,18 +695,48 @@ export default function Home() {
   }, [searchQuery]);
 
   useEffect(() => {
-    if (!authReady) return;
-    loadPosts().catch((error) => {
-      setStatus(error instanceof Error ? error.message : "Failed to load posts.");
-    });
-  }, [authReady, loadPosts]);
+    if (postsQuery.error) {
+      setStatus(postsQuery.error instanceof Error ? postsQuery.error.message : "Failed to load posts.");
+    }
+  }, [postsQuery.error]);
 
   useEffect(() => {
-    if (!authReady) return;
-    loadDrafts().catch((error) => {
-      setStatus(error instanceof Error ? error.message : "Failed to load drafts.");
-    });
-  }, [authReady, loadDrafts]);
+    if (draftsQuery.error) {
+      setStatus(draftsQuery.error instanceof Error ? draftsQuery.error.message : "Failed to load drafts.");
+    }
+  }, [draftsQuery.error]);
+
+  useEffect(() => {
+    const counts = postsQuery.data?.counts;
+    if (!counts) return;
+    setStats((prev) => ({
+      ...prev,
+      counts: { ...prev.counts, posts: counts }
+    }));
+  }, [postsQuery.data?.counts]);
+
+  // Only apply server page correction after a successful load (e.g. out-of-range clamp).
+  useEffect(() => {
+    if (postsLoading || !postsQuery.data) return;
+    const apiPage = postsQuery.data.page;
+    if (apiPage && apiPage !== postPage) setPostPage(apiPage);
+  }, [postsLoading, postsQuery.data, postPage]);
+
+  useEffect(() => {
+    if (draftsLoading || !draftsQuery.data) return;
+    const apiPage = draftsQuery.data.page;
+    if (apiPage && apiPage !== page) setPage(apiPage);
+  }, [draftsLoading, draftsQuery.data, page]);
+
+  useEffect(() => {
+    const existing = new Set(pagePosts.map((post) => Number(post.id)));
+    setSelectedPostIds((prev) => prev.filter((id) => existing.has(id)));
+  }, [pagePosts]);
+
+  useEffect(() => {
+    const existing = new Set(pageDrafts.map((draft) => draft.id));
+    setSelectedIds((prev) => prev.filter((id) => existing.has(id)));
+  }, [pageDrafts]);
 
   useEffect(() => {
     const pageParam = new URLSearchParams(window.location.search).get("page");
@@ -979,10 +1044,13 @@ export default function Home() {
   }
 
   function patchDraftLocal(draftId: number, patch: Partial<Draft>) {
-    setStats((prev) => ({
-      ...prev,
-      drafts: prev.drafts.map((item) => (item.id === draftId ? { ...item, ...patch } : item))
-    }));
+    queryClient.setQueryData<DraftsPageData>(draftsQueryKey, (prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.map((item) => (item.id === draftId ? { ...item, ...patch } : item))
+      };
+    });
   }
 
   function applyDraftFlagCounts(before: Draft, after: Partial<Draft>) {
@@ -1149,18 +1217,21 @@ export default function Home() {
       if (!results?.length) return;
       const byId = new Map(results.map((row) => [row.id, row.status]));
       const sentAt = new Date().toISOString();
-      setStats((prev) => ({
-        ...prev,
-        drafts: prev.drafts.map((draft) => {
-          const status = byId.get(draft.id);
-          if (!status || status === "limited") return draft;
-          return {
-            ...draft,
-            status: status === "sent" || status === "skipped" || status === "failed" ? status : draft.status,
-            sent_at: status === "sent" ? sentAt : draft.sent_at
-          };
-        })
-      }));
+      queryClient.setQueryData<DraftsPageData>(draftsQueryKey, (prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((draft) => {
+            const status = byId.get(draft.id);
+            if (!status || status === "limited") return draft;
+            return {
+              ...draft,
+              status: status === "sent" || status === "skipped" || status === "failed" ? status : draft.status,
+              sent_at: status === "sent" ? sentAt : draft.sent_at
+            };
+          })
+        };
+      });
       setSelectedIds((prev) => prev.filter((id) => {
         const status = byId.get(id);
         return !status || status === "limited";
@@ -1318,7 +1389,7 @@ export default function Home() {
 
   async function deleteSelectedPosts() {
     const deletableIds = selectedPostIds.filter((id) => {
-      const post = stats.posts.find((item) => Number(item.id) === id);
+      const post = pagePosts.find((item) => Number(item.id) === id);
       return post?.draft_status?.kind !== "drafted";
     });
     if (!deletableIds.length) {
@@ -1356,7 +1427,7 @@ export default function Home() {
   }
 
   async function deleteOnePost(postId: number) {
-    const post = stats.posts.find((item) => Number(item.id) === postId);
+    const post = pagePosts.find((item) => Number(item.id) === postId);
     if (post?.draft_status?.kind === "drafted") {
       showStatus("Drafted posts can’t be deleted. Remove the email in Step 3 first.");
       return;
@@ -1382,11 +1453,11 @@ export default function Home() {
   const safePostPage = Math.min(postPage, postTotalPages);
   const postPageStart = postTotal === 0 ? 0 : (safePostPage - 1) * postPageSize + 1;
   const postPageEnd = Math.min(safePostPage * postPageSize, postTotal);
-  const pagePosts = stats.posts;
 
   useEffect(() => {
+    if (postsLoading) return;
     if (postPage > postTotalPages) setPostPage(postTotalPages);
-  }, [postPage, postTotalPages]);
+  }, [postPage, postTotalPages, postsLoading]);
 
   const postFilterOptions: Array<{ id: PostFilter; label: string; count: number }> = [
     { id: "all", label: "All", count: stats.counts.posts.total },
@@ -1405,18 +1476,17 @@ export default function Home() {
   const importUsed = stats.quota?.import?.used ?? 0;
   const sendUsed = stats.quota?.send?.used ?? 0;
   const selectedUnsentIds = selectedIds.filter((id) => {
-    const draft = stats.drafts.find((item) => item.id === id);
+    const draft = pageDrafts.find((item) => item.id === id);
     return draft && isUnsent(draft);
   });
   const selectedUnsent = selectedUnsentIds.length;
   const hasResumeFile = Boolean(stats.profile?.has_resume_file);
-  const detailDraft = detailId == null ? null : stats.drafts.find((draft) => draft.id === detailId) || null;
+  const detailDraft = detailId == null ? null : pageDrafts.find((draft) => draft.id === detailId) || null;
 
   const totalPages = Math.max(1, Math.ceil(draftTotal / pageSize) || 1);
   const safePage = Math.min(page, totalPages);
   const pageStart = draftTotal === 0 ? 0 : (safePage - 1) * pageSize + 1;
   const pageEnd = Math.min(safePage * pageSize, draftTotal);
-  const pageDrafts = stats.drafts;
   const pageIds = pageDrafts.map((draft) => draft.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
   const somePageSelected = pageIds.some((id) => selectedIds.includes(id)) && !allPageSelected;
@@ -1431,8 +1501,9 @@ export default function Home() {
     deletablePagePostIds.some((id) => selectedPostIds.includes(id)) && !allPostsPageSelected;
 
   useEffect(() => {
+    if (draftsLoading) return;
     if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+  }, [page, totalPages, draftsLoading]);
 
   useEffect(() => {
     const node = document.getElementById("select-all-drafts") as HTMLInputElement | null;
