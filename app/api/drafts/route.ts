@@ -21,6 +21,7 @@ import { parsePage, parsePageSize, postDraftStatus } from "@/lib/post-draft-stat
 import type { CandidateProfile } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const BATCH_SIZE = 5;
 const BATCH_CONCURRENCY = 4;
@@ -203,6 +204,8 @@ export async function POST(request: Request) {
       const emails = parseJsonList(post.emailsJson);
       const email = emails[0];
       if (!email) continue;
+      // Unless the caller asked for specific postIds, skip posts already marked unworkable.
+      if (!requestedSet && String(post.draftSkipReason || "").trim()) continue;
       if (pendingOnly) {
         const outcome = postDraftStatus(
           {

@@ -1424,11 +1424,26 @@ export async function upsertLinkedInPosts(
 ) {
   const db = getDb();
   const timestamp = now();
+
+  // Deduplicate within the batch — Postgres rejects same-key duplicates in one INSERT.
+  const seen = new Set<string>();
+  const unique: typeof rows = [];
   for (const row of rows) {
-    const phones = Array.isArray(row.phones) ? row.phones : [];
-    await db
-      .insert(linkedinPosts)
-      .values({
+    const key = `${row.postedByUrl}\0${row.postedContent}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(row);
+  }
+  if (!unique.length) return [] as Array<{ id: number; emails: string[] }>;
+
+  const CHUNK = 50;
+  const out: Array<{ id: number; emails: string[] }> = [];
+
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunk = unique.slice(i, i + CHUNK);
+    const values = chunk.map((row) => {
+      const phones = Array.isArray(row.phones) ? row.phones : [];
+      return {
         userId,
         postedBy: row.postedBy,
         postedByUrl: row.postedByUrl,
@@ -1438,17 +1453,39 @@ export async function upsertLinkedInPosts(
         emailsJson: JSON.stringify(row.emails),
         phonesJson: JSON.stringify(phones),
         createdAt: timestamp
-      })
+      };
+    });
+
+    const saved = await db
+      .insert(linkedinPosts)
+      .values(values)
       .onConflictDoUpdate({
         target: [linkedinPosts.userId, linkedinPosts.postedByUrl, linkedinPosts.postedContent],
         set: {
-          postedDate: row.postedDate,
-          postUrl: row.postUrl,
-          emailsJson: JSON.stringify(row.emails),
-          phonesJson: JSON.stringify(phones)
+          postedDate: sql`excluded.posted_date`,
+          postUrl: sql`excluded.post_url`,
+          emailsJson: sql`excluded.emails_json`,
+          phonesJson: sql`excluded.phones_json`
         }
+      })
+      .returning({
+        id: linkedinPosts.id,
+        emailsJson: linkedinPosts.emailsJson
       });
+
+    for (const row of saved) {
+      let emails: string[] = [];
+      try {
+        const parsed = JSON.parse(String(row.emailsJson || "[]"));
+        if (Array.isArray(parsed)) emails = parsed.map((e) => String(e || "").trim()).filter(Boolean);
+      } catch {
+        emails = [];
+      }
+      out.push({ id: row.id, emails });
+    }
   }
+
+  return out;
 }
 
 export async function exportDraftRows(userId: string) {

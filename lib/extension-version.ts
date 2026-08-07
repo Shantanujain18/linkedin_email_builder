@@ -13,10 +13,10 @@ export type ExtensionConfigRow = {
 };
 
 const DEFAULT_CONFIG: ExtensionConfigRow = {
-  required_version: "2.3.0",
+  required_version: "2.4.0",
   update_url:
     "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb",
-  message: "Please install ReachPod extension 2.3.0 from the Chrome Web Store to continue.",
+  message: "Please install ReachPod extension 2.4.0 from the Chrome Web Store to continue.",
   updated_at: new Date(0).toISOString()
 };
 
@@ -43,8 +43,34 @@ export function normalizeExtensionVersion(value: string | null | undefined) {
     .replace(/^v/i, "");
 }
 
+/** Parse "2.3.0" / "2.3" into numeric parts for comparison. */
+export function parseVersionParts(value: string): number[] {
+  const normalized = normalizeExtensionVersion(value);
+  if (!normalized) return [];
+  return normalized.split(/[.+-]/).map((part) => {
+    const n = Number.parseInt(part, 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+}
+
+/** True when installed >= required (semver-ish numeric compare). */
+export function isVersionAtLeast(installed: string, required: string) {
+  const a = parseVersionParts(installed);
+  const b = parseVersionParts(required);
+  if (!a.length || !b.length) return false;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    const left = a[i] || 0;
+    const right = b[i] || 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return true;
+}
+
+/** @deprecated Prefer isVersionAtLeast — kept for callers that meant exact match. */
 export function versionsMatch(installed: string, required: string) {
-  return normalizeExtensionVersion(installed) === normalizeExtensionVersion(required);
+  return isVersionAtLeast(installed, required);
 }
 
 export function extensionVersionFromRequest(request: Request) {
@@ -73,7 +99,7 @@ export async function requireMatchingExtensionVersion(request: Request) {
     };
   }
 
-  if (!versionsMatch(installed, config.required_version)) {
+  if (!isVersionAtLeast(installed, config.required_version)) {
     return {
       ok: false as const,
       config,
@@ -82,7 +108,7 @@ export async function requireMatchingExtensionVersion(request: Request) {
         {
           error:
             config.message ||
-            `ReachPod extension ${config.required_version} is required (you have ${installed}).`,
+            `ReachPod extension ${config.required_version} or newer is required (you have ${installed}).`,
           code: "EXTENSION_VERSION_MISMATCH",
           required_version: config.required_version,
           installed_version: installed,

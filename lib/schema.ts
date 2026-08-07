@@ -128,8 +128,8 @@ export const contactSubmissions = pgTable("contact_submissions", {
 
 export const extensionConfig = pgTable("extension_config", {
   id: integer("id").primaryKey().default(1),
-  requiredVersion: text("required_version").notNull().default("2.3.0"),
+  requiredVersion: text("required_version").notNull().default("2.4.0"),
   updateUrl: text("update_url").notNull().default(""),
-  message: text("message").notNull().default("Please install ReachPod extension 2.3.0 to continue."),
+  message: text("message").notNull().default("Please install ReachPod extension 2.4.0 to continue."),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()
 });

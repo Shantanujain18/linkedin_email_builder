@@ -5,6 +5,7 @@ import { now, upsertLinkedInPosts } from "@/lib/db";
 import { requireMatchingExtensionVersion } from "@/lib/extension-version";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type RawPost = Record<string, unknown>;
 
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
     const user = await requireUser();
     if (!isUser(user)) return user;
 
-    const body = (await request.json().catch(() => ({}))) as { posts?: unknown };
+    const body = await request.json().catch(() => ({})) as { posts?: unknown };
     if (!Array.isArray(body.posts) || !body.posts.length) {
       return NextResponse.json({ error: "posts must be a non-empty array." }, { status: 400 });
     }
@@ -52,12 +53,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No readable posts in payload." }, { status: 400 });
     }
 
-    await upsertLinkedInPosts(user.id, rows);
+    const saved = await upsertLinkedInPosts(user.id, rows);
+    const withEmailIds = saved.filter((row) => row.emails.length).map((row) => row.id);
 
     return NextResponse.json({
-      imported: rows.length,
-      withEmails: rows.filter((row) => row.emails.length).length,
+      imported: saved.length,
+      withEmails: withEmailIds.length,
       withPhones: rows.filter((row) => row.phones.length).length,
+      postIds: withEmailIds,
       at: now()
     });
   } catch (error) {
