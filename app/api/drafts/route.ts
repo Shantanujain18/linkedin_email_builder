@@ -3,6 +3,7 @@ import { isUser, requireUser } from "@/lib/auth";
 import {
   clearDrafts,
   deleteDraftsByIds,
+  draftedEmailsTodaySet,
   existingDraftPostIds,
   getDraftStatus,
   getPostsWithEmails,
@@ -15,6 +16,7 @@ import {
   updateDraftContent,
   type DraftStatusFilter
 } from "@/lib/db";
+import { ALREADY_DRAFTED_EMAIL_TODAY, claimDraftEmail, normalizeDraftEmail } from "@/lib/draft-dedupe";
 import { draftEmailBatch } from "@/lib/openai";
 import { mapPool } from "@/lib/pool";
 import { parsePage, parsePageSize, postDraftStatus } from "@/lib/post-draft-status";
@@ -193,10 +195,15 @@ export async function POST(request: Request) {
     const posts = await getPostsWithEmails(user.id);
     if (!posts.length) return NextResponse.json({ error: "No imported posts contain email addresses." }, { status: 400 });
 
-    const existingPostIds = await existingDraftPostIds(user.id);
+    const [existingPostIds, draftedEmailsToday] = await Promise.all([
+      existingDraftPostIds(user.id),
+      draftedEmailsTodaySet(user.id)
+    ]);
     const topSkills = String(profileRow.top_skills || "");
+    const claimedEmails = new Set(draftedEmailsToday);
 
     const pending: PendingDraft[] = [];
+    const emailDupes: Array<{ postId: number; email: string; reason: string }> = [];
     for (const post of posts) {
       const postId = Number(post.id);
       if (requestedSet && !requestedSet.has(postId)) continue;
@@ -219,6 +226,15 @@ export async function POST(request: Request) {
         );
         if (outcome.kind !== "pending") continue;
       }
+      // One draft per recipient email per day (same recruiter, many posts).
+      if (!claimDraftEmail(email, claimedEmails)) {
+        emailDupes.push({
+          postId,
+          email: normalizeDraftEmail(email),
+          reason: ALREADY_DRAFTED_EMAIL_TODAY
+        });
+        continue;
+      }
       pending.push({
         key: String(postId),
         postId,
@@ -229,16 +245,37 @@ export async function POST(request: Request) {
       });
     }
 
-    if (!pending.length) {
-      return NextResponse.json({ created: 0, skipped: 0, pending: 0, remaining: 0 });
-    }
-
     const remaining = Math.max(0, pending.length - MAX_POSTS_PER_REQUEST);
     const work = pending.slice(0, MAX_POSTS_PER_REQUEST);
+    // Only stamp email-dupes whose winner is already in DB or in this request's work window
+    // (don't mark skipped if the first post for that email is still queued for a later chunk).
+    const workEmails = new Set(work.map((item) => normalizeDraftEmail(item.email)));
+    const stampDupes = emailDupes.filter(
+      (item) => draftedEmailsToday.has(item.email) || workEmails.has(item.email)
+    );
+
+    if (stampDupes.length) {
+      await mapPool(stampDupes, 8, async (item) => {
+        await setPostDraftSkipReason(user.id, item.postId, item.reason);
+      });
+    }
+
+    if (!work.length) {
+      return NextResponse.json({
+        created: 0,
+        skipped: stampDupes.length,
+        pending: 0,
+        remaining,
+        skip_reasons: stampDupes.slice(0, 20).map(({ postId, reason }) => ({ postId, reason }))
+      });
+    }
+
     const batches = chunk(work, BATCH_SIZE);
     let created = 0;
-    let skipped = 0;
-    const skipReasons: Array<{ postId: number; reason: string }> = [];
+    let skipped = stampDupes.length;
+    const skipReasons: Array<{ postId: number; reason: string }> = stampDupes
+      .slice(0, 20)
+      .map(({ postId, reason }) => ({ postId, reason }));
 
     await mapPool(batches, BATCH_CONCURRENCY, async (batch) => {
       const generated = await draftEmailBatch(profile, batch);

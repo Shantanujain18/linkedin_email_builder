@@ -9,9 +9,11 @@ export function Providers({ children }: { children: ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 60_000,
+            // Short stale window so in-app nav stays snappy; focus always refetches
+            // (extension may have written posts/drafts while this tab was backgrounded).
+            staleTime: 15_000,
             gcTime: 5 * 60_000,
-            refetchOnWindowFocus: false
+            refetchOnWindowFocus: "always"
           }
         }
       })

@@ -1550,6 +1550,20 @@ export async function existingDraftPostIds(userId: string) {
   return new Set(rows.map((row) => row.postId));
 }
 
+/** Recipient emails that already have a draft created on `day` (YYYY-MM-DD, UTC). */
+export async function draftedEmailsTodaySet(userId: string, day = todayKey()) {
+  const rows = await getDb()
+    .selectDistinct({ email: emailDrafts.recipientEmail })
+    .from(emailDrafts)
+    .where(
+      and(
+        eq(emailDrafts.userId, userId),
+        sql`(${emailDrafts.createdAt} AT TIME ZONE 'UTC')::date = ${day}::date`
+      )
+    );
+  return new Set(rows.map((row) => normalizeEmail(row.email)).filter(Boolean));
+}
+
 export async function insertDraft(
   userId: string,
   values: {

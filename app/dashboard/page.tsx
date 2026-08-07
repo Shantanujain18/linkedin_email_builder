@@ -687,6 +687,28 @@ export default function Home() {
 
   useEffect(() => { refresh().catch(() => { setAuthReady(true); router.replace("/login"); }); }, []);
 
+  // Extension writes while this tab is backgrounded — refresh status/counts on return
+  // (posts/drafts refetch via React Query refetchOnWindowFocus: "always").
+  useEffect(() => {
+    if (!authReady) return;
+    let last = 0;
+    function pullStatus() {
+      const now = Date.now();
+      if (now - last < 1500) return;
+      last = now;
+      refresh().catch(() => {});
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") pullStatus();
+    }
+    window.addEventListener("focus", pullStatus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", pullStatus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [authReady]);
+
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedPostSearch(postSearch), 300);
     return () => clearTimeout(timer);
