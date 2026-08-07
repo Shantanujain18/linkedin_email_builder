@@ -510,8 +510,11 @@ export default function Home() {
   const [postDateOptions, setPostDateOptions] = useState<string[]>([]);
   const [draftDateOptions, setDraftDateOptions] = useState<string[]>([]);
   const emailSetupInit = useRef(false);
+  const postsLoadGen = useRef(0);
+  const draftsLoadGen = useRef(0);
 
   const loadPosts = useCallback(async () => {
+    const gen = ++postsLoadGen.current;
     setPostsLoading(true);
     try {
       const params = new URLSearchParams({
@@ -522,6 +525,7 @@ export default function Home() {
         date: postDateFilter
       });
       const response = await fetch(`/api/posts?${params}`, { cache: "no-store" });
+      if (gen !== postsLoadGen.current) return;
       if (response.status === 401) {
         setUser(null);
         setAuthReady(true);
@@ -529,6 +533,7 @@ export default function Home() {
         return;
       }
       const data = await response.json();
+      if (gen !== postsLoadGen.current) return;
       if (!response.ok) throw new Error(data.error || "Failed to load posts.");
       setStats((prev) => ({
         ...prev,
@@ -546,11 +551,12 @@ export default function Home() {
         return prev.filter((id) => existing.has(id));
       });
     } finally {
-      setPostsLoading(false);
+      if (gen === postsLoadGen.current) setPostsLoading(false);
     }
   }, [postPage, postPageSize, postFilter, debouncedPostSearch, postDateFilter, router]);
 
   const loadDrafts = useCallback(async () => {
+    const gen = ++draftsLoadGen.current;
     setDraftsLoading(true);
     try {
       const params = new URLSearchParams({
@@ -561,6 +567,7 @@ export default function Home() {
         date: draftDateFilter
       });
       const response = await fetch(`/api/drafts?${params}`, { cache: "no-store" });
+      if (gen !== draftsLoadGen.current) return;
       if (response.status === 401) {
         setUser(null);
         setAuthReady(true);
@@ -568,6 +575,7 @@ export default function Home() {
         return;
       }
       const data = await response.json();
+      if (gen !== draftsLoadGen.current) return;
       if (!response.ok) throw new Error(data.error || "Failed to load drafts.");
       setStats((prev) => ({
         ...prev,
@@ -581,7 +589,7 @@ export default function Home() {
         return prev.filter((id) => existing.has(id));
       });
     } finally {
-      setDraftsLoading(false);
+      if (gen === draftsLoadGen.current) setDraftsLoading(false);
     }
   }, [page, pageSize, statusFilter, debouncedSearch, draftDateFilter, router]);
 
@@ -1827,7 +1835,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {postsLoading && postTotal === 0 ? (
+                  {postsLoading ? (
                     <div className="empty-state" style={{ marginTop: 12 }} aria-busy="true">
                       <span className="toast-spinner" aria-hidden />
                       <p>Loading posts…</p>
@@ -2327,7 +2335,7 @@ export default function Home() {
                 </div>
               </div>
 
-              {draftsLoading && draftTotal === 0 ? (
+              {draftsLoading ? (
                 <div className="empty-state" aria-busy="true">
                   <span className="toast-spinner" aria-hidden />
                   <p>Loading drafts…</p>
