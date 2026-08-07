@@ -1251,10 +1251,28 @@ label.field-label,
 .leads-posts-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 12px 16px;
   margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #1c1f2e;
+}
+
+.leads-posts-heading .section-title {
+  margin: 0 0 4px;
+}
+
+.leads-posts-meta {
+  margin: 0;
+  font-size: 12px;
+  color: #5b6a8a;
+  font-variant-numeric: tabular-nums;
+}
+
+.leads-posts-meta .meta-sep {
+  margin: 0 6px;
+  color: #2a3350;
 }
 
 .leads-posts-panel {
@@ -1279,10 +1297,66 @@ label.field-label,
 }
 
 .leads-posts-search {
-  min-width: 240px;
-  width: min(360px, 100%);
+  min-width: 220px;
+  width: min(280px, 100%);
 }
 
+.post-filter-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  padding: 3px;
+  border: 1px solid #1c1f2e;
+  border-radius: 8px;
+  background: #0a0c14;
+}
+
+.app-shell button.post-filter-tab {
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b9fbf;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 8px;
+  box-shadow: none;
+}
+
+.app-shell button.post-filter-tab:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: #c5d0e6;
+}
+
+.app-shell button.post-filter-tab.active {
+  background: #1a2240;
+  color: #e8ecf4;
+}
+
+.app-shell button.post-filter-tab.active:hover:not(:disabled) {
+  background: #1a2240;
+  color: #e8ecf4;
+}
+
+.post-filter-label {
+  white-space: nowrap;
+}
+
+.post-filter-count {
+  min-width: 1.5ch;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #5b6a8a;
+}
+
+.app-shell button.post-filter-tab.active .post-filter-count {
+  color: #8ea2ff;
+}
+
+/* Legacy pill filters (unused on leads; keep for safety) */
 .post-filter-chips {
   display: flex;
   flex-wrap: wrap;

@@ -7,9 +7,9 @@ export const SITE = {
   logo: "/brand/reachpod-logo.png"
 } as const;
 
-/** Chrome Web Store listing for the ReachPod extension. */
+/** Chrome Web Store listing for the ReachPod extension.
+ *  Required version / update message come from `extension_config` in the DB — do not hardcode here. */
 export const EXTENSION = {
-  required_version: "2.4.0",
   download_url:
     "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb"
 } as const;

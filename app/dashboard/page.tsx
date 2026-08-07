@@ -93,6 +93,12 @@ type WorkspaceCounts = {
   };
 };
 
+type ExtensionInfo = {
+  required_version: string;
+  update_url: string;
+  message: string;
+};
+
 type Stats = {
   profile: Record<string, string | boolean | number> | null;
   posts: PostRow[];
@@ -100,6 +106,7 @@ type Stats = {
   smtp: Smtp;
   quota: QuotaBundle | null;
   counts: WorkspaceCounts;
+  extension: ExtensionInfo | null;
 };
 
 type PageId = "profile" | "leads" | "send";
@@ -457,7 +464,8 @@ export default function Home() {
     drafts: [],
     smtp: defaultSmtp,
     quota: null,
-    counts: emptyCounts
+    counts: emptyCounts,
+    extension: null
   });
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -586,7 +594,14 @@ export default function Home() {
       profile: data.profile || null,
       smtp,
       quota: data.quota || null,
-      counts: nextCounts
+      counts: nextCounts,
+      extension: data.extension
+        ? {
+            required_version: String(data.extension.required_version || ""),
+            update_url: String(data.extension.update_url || ""),
+            message: String(data.extension.message || "")
+          }
+        : null
     }));
     setImmediateJoiner(Boolean(data.profile?.immediate_joiner));
     setSkillList(parseSkills(String(data.profile?.top_skills || "")));
@@ -1214,26 +1229,51 @@ export default function Home() {
   }
 
   async function deleteSelectedPosts() {
-    if (!selectedPostIds.length) return;
-    if (!window.confirm(`Delete ${selectedPostIds.length} selected post(s)? Linked drafts will also be removed.`)) return;
+    const deletableIds = selectedPostIds.filter((id) => {
+      const post = stats.posts.find((item) => Number(item.id) === id);
+      return post?.draft_status?.kind !== "drafted";
+    });
+    if (!deletableIds.length) {
+      showStatus("Drafted posts can’t be deleted. Remove the email in Step 3 first.");
+      return;
+    }
+    const blocked = selectedPostIds.length - deletableIds.length;
+    if (
+      !window.confirm(
+        blocked
+          ? `Delete ${deletableIds.length} post(s)? ${blocked} drafted post(s) will be skipped.`
+          : `Delete ${deletableIds.length} selected post(s)? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     showStatus("Deleting selected posts…");
     const response = await fetch("/api/posts", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids: selectedPostIds })
+      body: JSON.stringify({ ids: deletableIds })
     });
     const data = await response.json().catch(() => ({}));
     setBusy(false);
-    showStatus(data.error || `Deleted ${data.deleted || 0} post(s).`);
-    if (response.ok) {
-      setSelectedPostIds([]);
-      await refreshAll();
+    if (!response.ok) {
+      showStatus(data.error || "Failed to delete posts.");
+      return;
     }
+    const parts = [`Deleted ${data.deleted || 0} post(s)`];
+    if (data.blocked) parts.push(`${data.blocked} drafted skipped`);
+    showStatus(parts.join(" · ") + ".");
+    setSelectedPostIds([]);
+    await refreshAll();
   }
 
   async function deleteOnePost(postId: number) {
-    if (!window.confirm("Delete this post? Any linked draft will also be removed.")) return;
+    const post = stats.posts.find((item) => Number(item.id) === postId);
+    if (post?.draft_status?.kind === "drafted") {
+      showStatus("Drafted posts can’t be deleted. Remove the email in Step 3 first.");
+      return;
+    }
+    if (!window.confirm("Delete this post? This cannot be undone.")) return;
     setBusy(true);
     showStatus("Deleting post…");
     const response = await fetch("/api/posts", {
@@ -1293,10 +1333,14 @@ export default function Home() {
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
   const somePageSelected = pageIds.some((id) => selectedIds.includes(id)) && !allPageSelected;
   const pagePostIds = pagePosts.map((post) => Number(post.id));
+  const deletablePagePostIds = pagePosts
+    .filter((post) => post.draft_status?.kind !== "drafted")
+    .map((post) => Number(post.id));
   const allPostsPageSelected =
-    pagePostIds.length > 0 && pagePostIds.every((id) => selectedPostIds.includes(id));
+    deletablePagePostIds.length > 0 &&
+    deletablePagePostIds.every((id) => selectedPostIds.includes(id));
   const somePostsPageSelected =
-    pagePostIds.some((id) => selectedPostIds.includes(id)) && !allPostsPageSelected;
+    deletablePagePostIds.some((id) => selectedPostIds.includes(id)) && !allPostsPageSelected;
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -1322,8 +1366,8 @@ export default function Home() {
 
   function selectPostPageRecords(checked: boolean) {
     setSelectedPostIds((prev) => {
-      if (checked) return Array.from(new Set([...prev, ...pagePostIds]));
-      const remove = new Set(pagePostIds);
+      if (checked) return Array.from(new Set([...prev, ...deletablePagePostIds]));
+      const remove = new Set(deletablePagePostIds);
       return prev.filter((id) => !remove.has(id));
     });
   }
@@ -1439,11 +1483,13 @@ export default function Home() {
 
           <div className="extension-update-banner" role="status">
             <p>
-              Chrome extension <strong>v{EXTENSION.required_version}</strong> is required — scrape now saves posts and drafts emails automatically.
+              {stats.extension?.required_version
+                ? <>Chrome extension <strong>v{stats.extension.required_version}</strong> or newer is required — scrape now saves posts and drafts emails automatically.</>
+                : <>Install the ReachPod Chrome extension — scrape now saves posts and drafts emails automatically.</>}
             </p>
             <a
               className="btn-secondary btn-compact"
-              href={EXTENSION.download_url}
+              href={stats.extension?.update_url || EXTENSION.download_url}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1581,13 +1627,16 @@ export default function Home() {
                     <li>
                       Install{" "}
                       <a
-                        href={EXTENSION.download_url}
+                        href={stats.extension?.update_url || EXTENSION.download_url}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
                         ReachPod from the Chrome Web Store
-                      </a>{" "}
-                      (v{EXTENSION.required_version}), then pin it.
+                      </a>
+                      {stats.extension?.required_version
+                        ? ` (v${stats.extension.required_version}+)`
+                        : null}
+                      , then pin it.
                     </li>
                     <li>
                       On LinkedIn, open the extension, click <strong>Search and prepare emails</strong>, wait for drafts, then return here to send.
@@ -1625,42 +1674,23 @@ export default function Home() {
                     ) : null}
                   </form>
                 </details>
-
-                <div className="stat-chips">
-                  <div className="stat-chip">
-                    <span className="val">{stats.counts.posts.total}</span>
-                    <span className="lbl">Scraped</span>
-                  </div>
-                  <div className="stat-chip">
-                    <span className="val">{postsWithEmail}</span>
-                    <span className="lbl">Valid (has email)</span>
-                  </div>
-                  <div className="stat-chip">
-                    <span className="val">{postsWithoutEmail}</span>
-                    <span className="lbl">Invalid (no email)</span>
-                  </div>
-                  <div className="stat-chip">
-                    <span className="val">{postsDrafted}</span>
-                    <span className="lbl">Emails drafted</span>
-                  </div>
-                  <div className="stat-chip">
-                    <span className="val">{postsSkipped}</span>
-                    <span className="lbl">Skipped (skills)</span>
-                  </div>
-                  <div className="stat-chip">
-                    <span className="val">{postsPendingDraft}</span>
-                    <span className="lbl">Pending drafts</span>
-                  </div>
-                </div>
               </div>
 
               {leadsImported ? (
                 <div className="card leads-posts-panel" style={{ marginTop: 16 }}>
                   <div className="leads-posts-header">
-                    <div>
-                      <h3 className="section-title" style={{ marginBottom: 4 }}>Scraped posts</h3>
-                      <p className="hint" style={{ margin: 0 }}>
-                        Sorted: Pending first, then Drafted, then other Valid, then Invalid · Pending = match OK — write now
+                    <div className="leads-posts-heading">
+                      <h3 className="section-title">Scraped posts</h3>
+                      <p className="leads-posts-meta">
+                        <span>{stats.counts.posts.total.toLocaleString()} total</span>
+                        <span className="meta-sep" aria-hidden>
+                          ·
+                        </span>
+                        <span>{postsPendingDraft.toLocaleString()} pending</span>
+                        <span className="meta-sep" aria-hidden>
+                          ·
+                        </span>
+                        <span>{postsDrafted.toLocaleString()} drafted</span>
                       </p>
                     </div>
                     <div className="leads-posts-actions">
@@ -1670,25 +1700,25 @@ export default function Home() {
                         disabled={busy || !profileReady || !postsPendingDraft}
                         onClick={generatePending}
                       >
-                        Write pending emails
+                        Write pending
                         {postsPendingDraft ? <span className="btn-count">{postsPendingDraft}</span> : null}
                       </button>
                     </div>
                   </div>
 
                   <div className="leads-posts-toolbar">
-                    <div className="post-filter-chips" role="tablist" aria-label="Filter scraped posts">
+                    <div className="post-filter-bar" role="tablist" aria-label="Filter scraped posts">
                       {postFilterOptions.map((option) => (
                         <button
                           key={option.id}
                           type="button"
                           role="tab"
                           aria-selected={postFilter === option.id}
-                          className={`post-filter-chip${postFilter === option.id ? " active" : ""}`}
+                          className={`post-filter-tab${postFilter === option.id ? " active" : ""}`}
                           onClick={() => setPostFilter(option.id)}
                         >
-                          <span>{option.label}</span>
-                          <strong>{option.count}</strong>
+                          <span className="post-filter-label">{option.label}</span>
+                          <span className="post-filter-count">{option.count.toLocaleString()}</span>
                         </button>
                       ))}
                     </div>
@@ -1787,12 +1817,15 @@ export default function Home() {
                               const authorUrl = String(post.posted_by_url || "");
                               const postUrl = String(post.post_url || "");
                               const postId = Number(post.id);
+                              const isDrafted = outcome.kind === "drafted";
                               return (
                                 <tr key={postId}>
                                   <td>
                                     <input
                                       type="checkbox"
                                       checked={selectedPostIds.includes(postId)}
+                                      disabled={isDrafted}
+                                      title={isDrafted ? "Drafted posts can’t be deleted" : undefined}
                                       onChange={(e) => {
                                         setSelectedPostIds((prev) =>
                                           e.target.checked
@@ -1863,14 +1896,20 @@ export default function Home() {
                                           {outcome.kind === "skipped" ? "Retry write" : "Write email"}
                                         </button>
                                       ) : null}
-                                      <button
-                                        type="button"
-                                        className="link-btn link-btn-danger"
-                                        disabled={busy}
-                                        onClick={() => deleteOnePost(postId)}
-                                      >
-                                        Delete
-                                      </button>
+                                      {!isDrafted ? (
+                                        <button
+                                          type="button"
+                                          className="link-btn link-btn-danger"
+                                          disabled={busy}
+                                          onClick={() => deleteOnePost(postId)}
+                                        >
+                                          Delete
+                                        </button>
+                                      ) : (
+                                        <span className="hint" title="Delete the email draft in Step 3 first">
+                                          —
+                                        </span>
+                                      )}
                                     </div>
                                   </td>
                                 </tr>

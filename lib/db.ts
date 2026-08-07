@@ -684,12 +684,29 @@ export async function getPosts(userId: string) {
 
 export async function deletePostsByIds(userId: string, ids: number[]) {
   const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
-  if (!unique.length) return 0;
+  if (!unique.length) return { deleted: 0, blocked: 0, blockedIds: [] as number[] };
+
+  const drafted = await getDb()
+    .select({ postId: emailDrafts.postId })
+    .from(emailDrafts)
+    .where(and(eq(emailDrafts.userId, userId), inArray(emailDrafts.postId, unique)));
+  const blockedIds = drafted.map((row) => row.postId);
+  const blockedSet = new Set(blockedIds);
+  const deletable = unique.filter((id) => !blockedSet.has(id));
+  if (!deletable.length) {
+    return { deleted: 0, blocked: blockedIds.length, blockedIds };
+  }
+
   const deleted = await getDb()
     .delete(linkedinPosts)
-    .where(and(eq(linkedinPosts.userId, userId), inArray(linkedinPosts.id, unique)))
+    .where(and(eq(linkedinPosts.userId, userId), inArray(linkedinPosts.id, deletable)))
     .returning({ id: linkedinPosts.id });
-  return deleted.length;
+
+  return {
+    deleted: deleted.length,
+    blocked: blockedIds.length,
+    blockedIds
+  };
 }
 
 export type DraftStatusFilter = "all" | "unsent" | "draft" | "sent" | "skipped" | "replied";

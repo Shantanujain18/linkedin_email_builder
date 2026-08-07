@@ -12,14 +12,6 @@ export type ExtensionConfigRow = {
   updated_at: string;
 };
 
-const DEFAULT_CONFIG: ExtensionConfigRow = {
-  required_version: "2.4.0",
-  update_url:
-    "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb",
-  message: "Please install ReachPod extension 2.4.0 from the Chrome Web Store to continue.",
-  updated_at: new Date(0).toISOString()
-};
-
 export async function getExtensionConfig(): Promise<ExtensionConfigRow> {
   const [row] = await getDb()
     .select()
@@ -27,12 +19,16 @@ export async function getExtensionConfig(): Promise<ExtensionConfigRow> {
     .where(eq(extensionConfig.id, 1))
     .limit(1);
 
-  if (!row) return DEFAULT_CONFIG;
+  if (!row?.requiredVersion) {
+    throw new Error(
+      "extension_config is missing required_version. Run Supabase migrations (extension_config)."
+    );
+  }
 
   return {
     required_version: row.requiredVersion,
-    update_url: row.updateUrl,
-    message: row.message,
+    update_url: row.updateUrl || "",
+    message: row.message || "",
     updated_at: row.updatedAt
   };
 }

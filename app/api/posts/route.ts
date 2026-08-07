@@ -55,8 +55,25 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Select at least one post to delete." }, { status: 400 });
     }
 
-    const deleted = await deletePostsByIds(user.id, ids);
-    return NextResponse.json({ deleted, ids });
+    const result = await deletePostsByIds(user.id, ids);
+    if (!result.deleted && result.blocked) {
+      return NextResponse.json(
+        {
+          error: "Drafted posts can’t be deleted. Remove the email draft in Step 3 first.",
+          deleted: 0,
+          blocked: result.blocked,
+          blockedIds: result.blockedIds
+        },
+        { status: 409 }
+      );
+    }
+
+    return NextResponse.json({
+      deleted: result.deleted,
+      blocked: result.blocked,
+      blockedIds: result.blockedIds,
+      ids
+    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to delete posts." },
