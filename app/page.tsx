@@ -7,6 +7,7 @@ import { SmoothScroll } from "@/components/layout/SmoothScroll";
 import { Hero } from "@/components/sections/Hero";
 import { SocialProofBar } from "@/components/sections/SocialProofBar";
 import { HowItWorks } from "@/components/sections/HowItWorks";
+import { ReachPodInAction } from "@/components/sections/ReachPodInAction";
 import { Comparison } from "@/components/sections/Comparison";
 import { Features } from "@/components/sections/Features";
 import { Numbers } from "@/components/sections/Numbers";
@@ -24,6 +25,7 @@ export default function LandingPage() {
           <Hero />
           <SocialProofBar />
           <HowItWorks />
+          <ReachPodInAction />
           <Comparison />
           <Features />
           <Numbers />

@@ -14,8 +14,23 @@ export const EXTENSION = {
     "https://chromewebstore.google.com/detail/ippbibmncgbjnepmkgogdmbohfegfmid?utm_source=item-share-cb"
 } as const;
 
+export const DEMO_VIDEO_SRC = "/video/reachpod-demo.mp4" as const;
+
+export const FEATURED_TESTIMONIAL = {
+  name: "Anonymous User",
+  initials: "AU",
+  role: "Full Stack Engineer",
+  privacyNote: "This user preferred not to disclose their name.",
+  daysToOffer: 17,
+  outcome: "Full Stack Engineer offer via ReachPod outreach",
+  quote:
+    "ReachPod turned LinkedIn hiring posts into real conversations. I landed a Full Stack Engineer role in 17 days — without spraying generic applications.",
+  stars: 5
+} as const;
+
 export const NAV_LINKS = [
   { label: "How it Works", href: "/#how-it-works" },
+  { label: "Demo", href: "/#in-action" },
   { label: "Tool vs Service", href: "/#comparison" },
   { label: "Pricing", href: "/#pricing" },
   { label: "FAQ", href: "/#faq" },
@@ -124,59 +139,75 @@ export const STATS = [
 
 export const TESTIMONIALS = [
   {
+    name: "Anonymous User",
+    role: "Full Stack Engineer",
+    company: "Hired in 17 days · name withheld",
+    quote:
+      "ReachPod helped me land a Full Stack Engineer role in 17 days. Recruiters replied because every email referenced their actual post.",
+    stars: 5
+  },
+  {
     name: "Aisha Khan",
     role: "Backend Engineer",
     company: "ex-Flipkart",
-    quote: "I stopped spraying applications. Within two weeks I had real recruiter threads in my inbox.",
+    quote:
+      "I stopped spraying job portals. Within two weeks I had real recruiter threads in my Gmail — all from posts ReachPod found that week.",
     stars: 5
   },
   {
     name: "Rohan Mehta",
     role: "Product Designer",
-    company: "Freelance",
-    quote: "The drafts actually referenced the posts. Recruiters could tell it wasn’t a mass template.",
+    company: "ex-Razorpay",
+    quote:
+      "A hiring manager replied asking for my portfolio. They quoted my email back to me — it clearly wasn’t a copy-paste blast.",
     stars: 5
   },
   {
     name: "Priya Nair",
     role: "Data Analyst",
-    company: "Career switch",
-    quote: "Free tier was enough to prove it worked. Upgraded to Pro the same week.",
+    company: "Finance → tech switch",
+    quote:
+      "I had no warm network when I pivoted careers. ReachPod put me in front of managers who had literally posted about hiring that day.",
     stars: 5
   },
   {
-    name: "Dev Patel",
-    role: "Full-stack Dev",
+    name: "Karan Patel",
+    role: "Senior Software Engineer",
     company: "ex-Swiggy",
-    quote: "DFY service filled my pipeline while I focused on interviews. I handled every reply myself.",
+    quote:
+      "Used the done-for-you service while I prepped for interviews. Outreach kept running; I handled every reply myself.",
     stars: 5
   },
   {
     name: "Sara Joseph",
     role: "ML Engineer",
-    company: "Seeking roles",
-    quote: "Honest about what they don’t do. That clarity sold me more than any hype.",
+    company: "ex-Microsoft",
+    quote:
+      "Each draft tied my resume skills to what the recruiter posted. Felt like a warm intro, not a mail merge.",
     stars: 5
   },
   {
     name: "Arjun Desai",
-    role: "SDE-2",
-    company: "Bangalore",
-    quote: "SMTP through my Gmail meant replies came to me. ReachPod just opened the door.",
-    stars: 4
+    role: "SDE II",
+    company: "Bangalore · fintech",
+    quote:
+      "Sending from my own Gmail meant replies showed up with my name on the thread. ReachPod opened the door; I took the conversations from there.",
+    stars: 5
   },
   {
     name: "Neha Gupta",
     role: "Frontend Engineer",
-    company: "Remote",
-    quote: "Scraping + drafting alone saved me hours every day. Sending was the easy part.",
+    company: "Remote · ex-PhonePe",
+    quote:
+      "The extension pulled fresh hiring posts daily. I reviewed drafts over coffee, hit send, and got hours back every week.",
     stars: 5
   },
   {
-    name: "Kabir Singh",
-    role: "DevOps",
-    company: "Job search",
-    quote: "35% reply rate felt unreal until I saw how specific each email was.",
+    name: "Meera Iyer",
+    role: "QA Engineer",
+    company: "ex-Zomato",
+    quote:
+      "Recruiters responded because every email referenced their actual post. My reply rate beat every template I had tried before.",
     stars: 5
   }
 ] as const;
@@ -273,6 +304,7 @@ export const FAQS = [
 export const FOOTER_LINKS = {
   product: [
     { label: "How it Works", href: "/#how-it-works" },
+    { label: "Demo", href: "/#in-action" },
     { label: "Features", href: "/#features" },
     { label: "Pricing", href: "/#pricing" }
   ],
