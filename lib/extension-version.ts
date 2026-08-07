@@ -12,7 +12,16 @@ export type ExtensionConfigRow = {
   updated_at: string;
 };
 
+/** ponytail: in-memory TTL cache — bump TTL or add invalidate if admin edits config live often. */
+const EXTENSION_CONFIG_TTL_MS = 60_000;
+let extensionConfigCache: { at: number; value: ExtensionConfigRow } | null = null;
+
 export async function getExtensionConfig(): Promise<ExtensionConfigRow> {
+  const nowMs = Date.now();
+  if (extensionConfigCache && nowMs - extensionConfigCache.at < EXTENSION_CONFIG_TTL_MS) {
+    return extensionConfigCache.value;
+  }
+
   const [row] = await getDb()
     .select()
     .from(extensionConfig)
@@ -25,12 +34,14 @@ export async function getExtensionConfig(): Promise<ExtensionConfigRow> {
     );
   }
 
-  return {
+  const value: ExtensionConfigRow = {
     required_version: row.requiredVersion,
     update_url: row.updateUrl || "",
     message: row.message || "",
     updated_at: row.updatedAt
   };
+  extensionConfigCache = { at: nowMs, value };
+  return value;
 }
 
 export function normalizeExtensionVersion(value: string | null | undefined) {

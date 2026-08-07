@@ -40,6 +40,15 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 
   const supabase = await createClient();
+  // Middleware refreshes cookies; prefer local session read over Auth round-trip on every API call.
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+  if (session?.user) {
+    await ensureUserDefaults(session.user.id);
+    return mapUser(session.user);
+  }
+
   const {
     data: { user }
   } = await supabase.auth.getUser();

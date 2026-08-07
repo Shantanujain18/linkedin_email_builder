@@ -49,26 +49,30 @@ export function normalizeEmail(email: string) {
   return String(email || "").trim().toLowerCase();
 }
 
+/** Process-local: avoid 2 inserts on every authenticated request after first touch. */
+const ensuredUserDefaults = new Set<string>();
+
 export async function ensureUserDefaults(userId: string) {
+  if (ensuredUserDefaults.has(userId)) return;
   const db = getDb();
   const timestamp = now();
-  await db
-    .insert(profiles)
-    .values({
-      userId,
-      plan: "free",
-      dailyPostLimit: 50,
-      postsFetchedOn: "",
-      postsFetchedToday: 0,
-      postsImportedOn: "",
-      postsImportedToday: 0,
-      updatedAt: timestamp
-    })
-    .onConflictDoNothing({ target: profiles.userId });
-  await db
-    .insert(smtpSettings)
-    .values({ userId, updatedAt: timestamp })
-    .onConflictDoNothing({ target: smtpSettings.userId });
+  await Promise.all([
+    db
+      .insert(profiles)
+      .values({
+        userId,
+        plan: "free",
+        dailyPostLimit: 50,
+        postsFetchedOn: "",
+        postsFetchedToday: 0,
+        postsImportedOn: "",
+        postsImportedToday: 0,
+        updatedAt: timestamp
+      })
+      .onConflictDoNothing({ target: profiles.userId }),
+    db.insert(smtpSettings).values({ userId, updatedAt: timestamp }).onConflictDoNothing({ target: smtpSettings.userId })
+  ]);
+  ensuredUserDefaults.add(userId);
 }
 
 export type DailyQuota = {
@@ -111,6 +115,35 @@ async function readQuotaRow(userId: string): Promise<ProfileQuotaRow | undefined
     .where(eq(profiles.userId, userId))
     .limit(1);
   return row;
+}
+
+function quotasFromRow(row: ProfileQuotaRow | undefined, sendUsed: number, day = todayKey()) {
+  const scrape = row
+    ? scrapeQuotaFromRow(row, day)
+    : {
+        plan: "free",
+        daily_post_limit: 50,
+        posts_fetched_today: 0,
+        posts_fetched_on: day,
+        remaining: 50
+      };
+  const csvImport = row
+    ? importQuotaFromRow(row, day)
+    : { plan: "free", daily_post_limit: 50, used: 0, remaining: 50, day };
+  const { plan, limit } = limitFromRow(row);
+  return {
+    plan: scrape.plan,
+    daily_post_limit: scrape.daily_post_limit,
+    scrape,
+    import: csvImport,
+    send: {
+      plan,
+      daily_post_limit: limit,
+      used: sendUsed,
+      remaining: Math.max(0, limit - sendUsed),
+      day
+    } satisfies DailyQuota
+  };
 }
 
 function limitFromRow(row: { plan: string; dailyPostLimit: number } | undefined) {
@@ -185,18 +218,15 @@ export async function getSendQuota(userId: string): Promise<DailyQuota> {
 }
 
 export async function getAllDailyQuotas(userId: string) {
-  const [scrape, csvImport, send] = await Promise.all([
-    getScrapeQuota(userId),
-    getImportQuota(userId),
-    getSendQuota(userId)
+  const day = todayKey();
+  const [row, sendCountRows] = await Promise.all([
+    readQuotaRow(userId),
+    getDb()
+      .select({ count: sql<number>`count(*)::int` })
+      .from(emailSendLog)
+      .where(and(eq(emailSendLog.userId, userId), eq(emailSendLog.sentOn, day)))
   ]);
-  return {
-    plan: scrape.plan,
-    daily_post_limit: scrape.daily_post_limit,
-    scrape,
-    import: csvImport,
-    send
-  };
+  return quotasFromRow(row, Number(sendCountRows[0]?.count) || 0, day);
 }
 
 /** Atomically reserve up to `requested` posts against today's scrape quota. */
@@ -576,16 +606,46 @@ export async function getProfile(userId: string) {
   } as Record<string, string | number>;
 }
 
+/** Dashboard/public profile — never pulls resume_text (can be huge). */
 export async function getPublicProfile(userId: string) {
-  const row = await getProfile(userId);
+  const [row] = await getDb()
+    .select({
+      userId: profiles.userId,
+      name: profiles.name,
+      yoe: profiles.yoe,
+      topSkills: profiles.topSkills,
+      currentRole: profiles.currentRole,
+      resumeLink: profiles.resumeLink,
+      phone: profiles.phone,
+      email: profiles.email,
+      resumeFilename: profiles.resumeFilename,
+      resumeMime: profiles.resumeMime,
+      resumePath: profiles.resumePath,
+      immediateJoiner: profiles.immediateJoiner,
+      updatedAt: profiles.updatedAt,
+      hasResumeText: sql<boolean>`length(trim(${profiles.resumeText})) > 0`
+    })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+
   if (!row) return null;
-  const hasContent = Boolean(String(row.resume_text || "").trim() || row.resume_path);
+  const hasContent = Boolean(row.hasResumeText || String(row.resumePath || "").trim());
   if (!hasContent) return null;
-  const { resume_text: _t, resume_path: path, ...rest } = row;
   return {
-    ...rest,
-    immediate_joiner: Number(row.immediate_joiner) === 1,
-    has_resume_file: Boolean(path)
+    user_id: row.userId,
+    name: row.name,
+    yoe: row.yoe,
+    top_skills: row.topSkills,
+    current_role: row.currentRole,
+    resume_link: row.resumeLink,
+    phone: row.phone,
+    email: row.email,
+    resume_filename: row.resumeFilename,
+    resume_mime: row.resumeMime,
+    immediate_joiner: Boolean(row.immediateJoiner),
+    updated_at: row.updatedAt,
+    has_resume_file: Boolean(String(row.resumePath || "").trim())
   };
 }
 
@@ -756,26 +816,27 @@ export async function getDraftCounts(userId: string) {
 /** Fast SQL counts for dashboard bootstrap. Pending ≈ valid + no draft + no stored skip reason
  *  (skill-fit soft-skips are refined when /api/posts loads). */
 export async function getPostCounts(userId: string) {
-  const drafted = sql`exists (
-    select 1 from ${emailDrafts} d
-    where d.post_id = ${linkedinPosts.id} and d.user_id = ${linkedinPosts.userId}
-  )`;
   const hasEmail = sql`${linkedinPosts.emailsJson} is not null
     and ${linkedinPosts.emailsJson} <> ''
     and ${linkedinPosts.emailsJson} <> '[]'`;
   const hasSkip = sql`coalesce(trim(${linkedinPosts.draftSkipReason}), '') <> ''`;
+  const hasDraft = sql`${emailDrafts.id} is not null`;
 
   const [row] = await getDb()
     .select({
       total: sql<number>`count(*)::int`,
       valid: sql<number>`count(*) filter (where ${hasEmail})::int`,
-      drafted: sql<number>`count(*) filter (where ${drafted})::int`,
-      skipped: sql<number>`count(*) filter (where ${hasSkip} and not ${drafted})::int`,
+      drafted: sql<number>`count(*) filter (where ${hasDraft})::int`,
+      skipped: sql<number>`count(*) filter (where ${hasSkip} and not ${hasDraft})::int`,
       pending: sql<number>`count(*) filter (
-        where ${hasEmail} and not ${drafted} and not ${hasSkip}
+        where ${hasEmail} and not ${hasDraft} and not ${hasSkip}
       )::int`
     })
     .from(linkedinPosts)
+    .leftJoin(
+      emailDrafts,
+      and(eq(emailDrafts.postId, linkedinPosts.id), eq(emailDrafts.userId, linkedinPosts.userId))
+    )
     .where(eq(linkedinPosts.userId, userId));
 
   const total = Number(row?.total) || 0;
@@ -793,6 +854,126 @@ export async function getPostCounts(userId: string) {
 export async function getWorkspaceCounts(userId: string) {
   const [posts, drafts] = await Promise.all([getPostCounts(userId), getDraftCounts(userId)]);
   return { posts, drafts };
+}
+
+/** One parallel batch for /api/status — no resume_text, no triple quota reads. */
+export async function getStatusBootstrap(userId: string) {
+  const day = todayKey();
+  const db = getDb();
+
+  const [profileRow, smtpRow, sendCountRows, posts, drafts] = await Promise.all([
+    db
+      .select({
+        userId: profiles.userId,
+        name: profiles.name,
+        yoe: profiles.yoe,
+        topSkills: profiles.topSkills,
+        currentRole: profiles.currentRole,
+        resumeLink: profiles.resumeLink,
+        phone: profiles.phone,
+        email: profiles.email,
+        resumeFilename: profiles.resumeFilename,
+        resumeMime: profiles.resumeMime,
+        resumePath: profiles.resumePath,
+        immediateJoiner: profiles.immediateJoiner,
+        updatedAt: profiles.updatedAt,
+        hasResumeText: sql<boolean>`length(trim(${profiles.resumeText})) > 0`,
+        plan: profiles.plan,
+        dailyPostLimit: profiles.dailyPostLimit,
+        postsFetchedOn: profiles.postsFetchedOn,
+        postsFetchedToday: profiles.postsFetchedToday,
+        postsImportedOn: profiles.postsImportedOn,
+        postsImportedToday: profiles.postsImportedToday
+      })
+      .from(profiles)
+      .where(eq(profiles.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db
+      .select({
+        host: smtpSettings.host,
+        port: smtpSettings.port,
+        secure: smtpSettings.secure,
+        user: smtpSettings.user,
+        fromEmail: smtpSettings.fromEmail,
+        fromName: smtpSettings.fromName,
+        attachResume: smtpSettings.attachResume,
+        hasPass: sql<boolean>`coalesce(trim(${smtpSettings.pass}), '') <> ''`
+      })
+      .from(smtpSettings)
+      .where(eq(smtpSettings.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(emailSendLog)
+      .where(and(eq(emailSendLog.userId, userId), eq(emailSendLog.sentOn, day))),
+    getPostCounts(userId),
+    getDraftCounts(userId)
+  ]);
+
+  const hasContent = Boolean(
+    profileRow && (profileRow.hasResumeText || String(profileRow.resumePath || "").trim())
+  );
+  const profile = hasContent && profileRow
+    ? {
+        user_id: profileRow.userId,
+        name: profileRow.name,
+        yoe: profileRow.yoe,
+        top_skills: profileRow.topSkills,
+        current_role: profileRow.currentRole,
+        resume_link: profileRow.resumeLink,
+        phone: profileRow.phone,
+        email: profileRow.email,
+        resume_filename: profileRow.resumeFilename,
+        resume_mime: profileRow.resumeMime,
+        immediate_joiner: Boolean(profileRow.immediateJoiner),
+        updated_at: profileRow.updatedAt,
+        has_resume_file: Boolean(String(profileRow.resumePath || "").trim())
+      }
+    : null;
+
+  const smtp = smtpRow
+    ? {
+        host: smtpRow.host || "smtp.gmail.com",
+        port: Number(smtpRow.port) || 587,
+        secure: Boolean(smtpRow.secure),
+        user: smtpRow.user || "",
+        from_email: smtpRow.fromEmail || smtpRow.user || "",
+        from_name: smtpRow.fromName || "",
+        attach_resume: smtpRow.attachResume !== false,
+        configured: Boolean(smtpRow.user && smtpRow.hasPass),
+        has_password: Boolean(smtpRow.hasPass)
+      }
+    : {
+        host: "smtp.gmail.com",
+        port: 587,
+        secure: false,
+        user: "",
+        from_email: "",
+        from_name: "",
+        attach_resume: true,
+        configured: false,
+        has_password: false
+      };
+
+  const quotaRow = profileRow
+    ? {
+        plan: profileRow.plan,
+        dailyPostLimit: profileRow.dailyPostLimit,
+        postsFetchedOn: profileRow.postsFetchedOn,
+        postsFetchedToday: profileRow.postsFetchedToday,
+        postsImportedOn: profileRow.postsImportedOn,
+        postsImportedToday: profileRow.postsImportedToday
+      }
+    : undefined;
+
+  return {
+    profile,
+    smtp,
+    quota: quotasFromRow(quotaRow, Number(sendCountRows[0]?.count) || 0, day),
+    counts: { posts, drafts }
+  };
 }
 
 export async function listDraftsPage(
