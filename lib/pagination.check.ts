@@ -22,10 +22,12 @@ function slicePage<T>(items: T[], page: number, pageSize: number) {
   return { items: items.slice(start, start + pageSize), total, page: safePage };
 }
 
-function sortBySentThenCreated(
+function sortByCreatedThenSent(
   rows: Array<{ sent_at?: string; created_at?: string }>
 ) {
   return [...rows].sort((a, b) => {
+    const createdCmp = String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    if (createdCmp !== 0) return createdCmp;
     const aSent = String(a.sent_at || "");
     const bSent = String(b.sent_at || "");
     if (aSent !== bSent) {
@@ -33,7 +35,7 @@ function sortBySentThenCreated(
       if (!bSent) return -1;
       return bSent.localeCompare(aSent);
     }
-    return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    return 0;
   });
 }
 
@@ -48,13 +50,19 @@ if (sliced.page !== 2 || sliced.items.join(",") !== "3,4" || sliced.total !== 5)
   throw new Error("slicePage failed");
 }
 
-const sorted = sortBySentThenCreated([
-  { sent_at: "", created_at: "2026-01-02" },
+const sorted = sortByCreatedThenSent([
   { sent_at: "2026-02-01", created_at: "2026-01-01" },
-  { sent_at: "2026-03-01", created_at: "2026-01-03" }
+  { sent_at: "", created_at: "2026-01-03" },
+  { sent_at: "2026-03-01", created_at: "2026-01-02" },
+  { sent_at: "2026-01-15", created_at: "2026-01-02" }
 ]);
-if (sorted[0].sent_at !== "2026-03-01" || sorted[2].sent_at !== "") {
-  throw new Error("sortBySentThenCreated failed");
+if (
+  sorted[0].created_at !== "2026-01-03" ||
+  sorted[1].sent_at !== "2026-03-01" ||
+  sorted[2].sent_at !== "2026-01-15" ||
+  sorted[3].created_at !== "2026-01-01"
+) {
+  throw new Error("sortByCreatedThenSent failed");
 }
 
 console.log("pagination.check: ok");

@@ -2428,7 +2428,7 @@ export default function Home() {
               ) : (
                 <>
                   <div className="table-count">
-                    Sorted by sent date, then created · Showing {pageStart}–{pageEnd} of {draftTotal}
+                    Sorted by created date, then sent · Showing {pageStart}–{pageEnd} of {draftTotal}
                     {draftTotal !== stats.counts.drafts.total
                       ? ` · ${stats.counts.drafts.total} total`
                       : null}

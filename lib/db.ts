@@ -1051,6 +1051,8 @@ export async function listDraftsPage(
   }));
 
   enriched.sort((a, b) => {
+    const createdCmp = String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    if (createdCmp !== 0) return createdCmp;
     const aSent = String(a.sent_at || "");
     const bSent = String(b.sent_at || "");
     if (aSent !== bSent) {
@@ -1058,7 +1060,7 @@ export async function listDraftsPage(
       if (!bSent) return -1;
       return bSent.localeCompare(aSent);
     }
-    return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    return 0;
   });
 
   const total = enriched.length;
